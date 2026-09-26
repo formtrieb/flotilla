@@ -644,8 +644,9 @@ export class AnnotatePatchError extends Error {
 
 /**
  * Validate the Files half of an {@link AnnotatePatch} before any write — every
- * store calls it as the first statement of `annotate`, beside the codec's
- * `assertAcceptanceCriteriaShape`. Refuses `files` and `filesAdd` together
+ * store calls it in `annotate` right after the codec's acceptance-criteria
+ * shape assertion (`assertAcceptanceCriteriaShape`) and before any read or
+ * write. Refuses `files` and `filesAdd` together
  * (replace and append in one patch have no single meaning, ADR-0054 decision 5)
  * and a `filesAdd` that is not an array of non-blank strings.
  */
@@ -719,6 +720,182 @@ export function appendToFilesSection(body: string, add: readonly string[]): stri
   return lines.join('\n');
 }
 
+// ── block / unblock (ADR-0054 decisions 1–4) — one dependency edge at a time ──
+//
+// `blockedBy` used to have exactly one writer, `create`. A dependency found
+// after filing had none: `annotate`'s patch deliberately carries no
+// `blockedBy`, and `amend` refuses the heading. The two verbs below are the
+// post-filing writer. They are a PAIR rather than a field on `annotate`,
+// because a dependency is an edge that arrives on its own, not a list authored
+// as a whole, and because on GitHub/Linear a "replace" of the body list could
+// never take effect while a native edge outlived it (ADR-0054, Considered
+// Options).
+
+/** One thing the cycle walk could not read, and why (the abstention's evidence). */
+export interface BlockerChainGap {
+  /** The id (or, for a ref the store cannot address, the ref) that went unread. */
+  readonly id: string;
+  readonly reason: string;
+}
+
+/**
+ * The answer of {@link checkBlockerChain}. `cycle` names every issue on it in
+ * order, starting and ending with the issue being blocked — each one is
+ * blocked by the next. `abstained` means a read along the chain failed, so the
+ * walk could not decide (ADR-0052): the caller warns and writes.
+ */
+export type BlockerChainCheck =
+  | { readonly kind: 'clear' }
+  | { readonly kind: 'cycle'; readonly cycle: readonly string[] }
+  | { readonly kind: 'abstained'; readonly gaps: readonly BlockerChainGap[] };
+
+/** What {@link IssueStore.block} did. */
+export interface BlockResult {
+  /** True when the body gained the ref; false for the no-op (it was already recorded there). */
+  readonly added: boolean;
+  /**
+   * Present only when the cycle walk abstained — a read along the blocker
+   * chain failed, so no cycle could be ruled out — and the write went ahead
+   * anyway (ADR-0054 decision 4, ADR-0052). The CLI prints it as a warning.
+   */
+  readonly abstained?: readonly BlockerChainGap[];
+}
+
+/** What {@link IssueStore.unblock} did. */
+export interface UnblockResult {
+  /** True when a body ref or a native edge was removed; false for the no-op (neither was present). */
+  readonly removed: boolean;
+}
+
+/** Where a still-reported blocker comes from after an `unblock` write. */
+export type BlockedBySource = 'body' | 'native-edge';
+
+/** The cycle, rendered the way every refusal and report prints it. */
+export function formatBlockerCycle(cycle: readonly string[]): string {
+  return cycle.join(' → ');
+}
+
+/**
+ * `block` refused: the new edge would close a dependency cycle (ADR-0054
+ * decision 4). Thrown BEFORE any write, carrying the cycle so a caller can
+ * print it; the CLI maps it to exit 1.
+ */
+export class BlockCycleError extends Error {
+  readonly id: string;
+  readonly by: string;
+  readonly cycle: readonly string[];
+  constructor(id: string, by: string, cycle: readonly string[]) {
+    super(
+      `block: refused — recording ${id} as blocked by ${by} would close a dependency ` +
+        `cycle: ${formatBlockerCycle(cycle)} (each issue blocked by the next). ` +
+        'Nothing was written (ADR-0054 decision 4).',
+    );
+    this.name = 'BlockCycleError';
+    this.id = id;
+    this.by = by;
+    this.cycle = cycle;
+  }
+}
+
+/**
+ * `unblock` wrote, read the issue back, and the union read STILL reports the
+ * ref (ADR-0054 decision 3) — for example because the host refused the native
+ * delete. It never reports "removed" for a dependency every gate will still
+ * see, so it throws instead, naming where the ref still comes from. The CLI
+ * maps it to exit 1.
+ */
+export class UnblockResidueError extends Error {
+  readonly id: string;
+  readonly by: string;
+  readonly sources: readonly BlockedBySource[];
+  constructor(id: string, by: string, sources: readonly BlockedBySource[], detail?: string) {
+    const named = sources.map((s) => (s === 'body' ? 'the body' : 'the native edge')).join(' and ');
+    super(
+      `unblock: ${id} still reports ${by} as a blocker after the write — it still comes ` +
+        `from ${named === '' ? 'a source this store could not name' : named}` +
+        `${detail ? ` (${detail})` : ''}. Every gate still sees this dependency; ` +
+        'remove it there by hand, or re-run unblock (ADR-0054 decision 3).',
+    );
+    this.name = 'UnblockResidueError';
+    this.id = id;
+    this.by = by;
+    this.sources = sources;
+  }
+}
+
+/** A hard ceiling on the walk, so a runaway graph abstains instead of hanging. */
+const BLOCKER_CHAIN_LIMIT = 500;
+
+/**
+ * The cycle check `block` runs BEFORE it writes (ADR-0054 decision 4): follow
+ * the blocker chain from `blockerId` through the store's own reads, and report
+ * a cycle if the chain reaches `targetId`. Breadth-first, so the cycle it
+ * reports is a shortest one.
+ *
+ * Store-blind by construction: the store supplies `read` (its union read, so a
+ * native edge drawn by hand counts), `parseRef` and `idForRef` — the id a ref
+ * resolves to when named by `referencingId`, or `null` for a ref this store
+ * cannot address (another repo's issue on GitHub, another slug's tree on
+ * MarkdownFs). Ids are compared as `idForRef` renders them, so both ends of
+ * the comparison come from the same store function.
+ *
+ * A failed read, an unaddressable ref, or the walk's size ceiling each becomes
+ * a {@link BlockerChainGap}. When no cycle is found and at least one gap
+ * exists, the answer is `abstained`, never `clear`: no evidence must not
+ * counterfeit a clear answer (ADR-0052). A cycle found on one branch still
+ * outranks a gap on another — it is positive evidence.
+ */
+export async function checkBlockerChain(opts: {
+  targetId: string;
+  blockerId: string;
+  read: (id: string) => Promise<{ blockedBy: 'none' | IssueRef[] }>;
+  parseRef: (id: string) => IssueRef;
+  idForRef: (ref: IssueRef, referencingId: string) => string | null;
+}): Promise<BlockerChainCheck> {
+  const target = opts.idForRef(opts.parseRef(opts.targetId), opts.targetId) ?? opts.targetId;
+  const start = opts.idForRef(opts.parseRef(opts.blockerId), opts.targetId) ?? opts.blockerId;
+  if (start === target) return { kind: 'cycle', cycle: [target, target] };
+
+  const parent = new Map<string, string>([[start, target]]);
+  const queue = [start];
+  const gaps: BlockerChainGap[] = [];
+  while (queue.length > 0) {
+    const node = queue.shift() as string;
+    if (parent.size > BLOCKER_CHAIN_LIMIT) {
+      gaps.push({ id: node, reason: `the walk stopped after ${BLOCKER_CHAIN_LIMIT} issues` });
+      break;
+    }
+    let blockedBy: 'none' | IssueRef[];
+    try {
+      blockedBy = (await opts.read(node)).blockedBy;
+    } catch (err) {
+      gaps.push({ id: node, reason: `reading it failed: ${(err as Error).message}` });
+      continue;
+    }
+    if (blockedBy === 'none') continue;
+    for (const ref of blockedBy) {
+      const next = opts.idForRef(ref, node);
+      if (next === null) {
+        gaps.push({
+          id: `${ref.slug ?? ''}#${ref.issue}`,
+          reason: `${node} is blocked by it, and this store cannot read it`,
+        });
+        continue;
+      }
+      if (next === target) {
+        const chain: string[] = [];
+        for (let cur = node; cur !== target; cur = parent.get(cur) as string) chain.unshift(cur);
+        return { kind: 'cycle', cycle: [target, ...chain, target] };
+      }
+      if (!parent.has(next)) {
+        parent.set(next, node);
+        queue.push(next);
+      }
+    }
+  }
+  return gaps.length > 0 ? { kind: 'abstained', gaps } : { kind: 'clear' };
+}
+
 /**
  * The authored-content patch the Amend facet writes (ADR-0025). Deliberately
  * minimal: every MODELED surface keeps its own owner — the wave Header-Block →
@@ -741,7 +918,8 @@ export interface AmendPatch {
    * content is REPLACED (no shadow duplicate), an ABSENT one is appended. A
    * heading colliding with the codec's reserved Header-Block sections (Files,
    * Blocked by, Unblocks, Acceptance criteria) throws, pointing the caller at
-   * `annotate`.
+   * the verb that writes it: `issue-store block` / `unblock` for Blocked by
+   * (ADR-0054), `annotate` for the rest.
    */
   sections?: { heading: string; markdown: string }[];
 }
@@ -1761,9 +1939,45 @@ export interface IssueStore {
    * Decorate assumes the triage-ready target already carries `Blocked by` (the
    * ADR-0010 template contract); {@link AnnotatePatch} deliberately omits it, so
    * annotating an issue that lacks `Blocked by` will not by itself yield a
-   * DOR-passing result.
+   * DOR-passing result. A dependency found after filing is written by
+   * {@link block}, one edge at a time (ADR-0054).
    */
   annotate(id: string, patch: AnnotatePatch): Promise<void>;
+
+  /**
+   * Record that issue `id` is blocked by issue `by` — ONE dependency edge, for
+   * a dependency found after filing (ADR-0054 decisions 1, 2 and 4). `by` is the
+   * blocker's id as this store mints it, inverted through {@link parseRef},
+   * never parsed by hand.
+   *
+   * Writes the way {@link create} does: the body's `Blocked by` record gains
+   * the ref and stays authoritative (the MarkdownFs `**Blocked by:**` header
+   * line, the GitHub/Linear `## Blocked by` section), and on a host with native
+   * edges the edge is mirrored best-effort. A ref already recorded in the body
+   * is a no-op that succeeds (`added: false`) and writes nothing.
+   *
+   * Before writing it runs {@link checkBlockerChain}: if the chain from `by`
+   * reaches `id`, it throws {@link BlockCycleError} and writes nothing. If a
+   * read along the chain fails it abstains — it writes anyway and returns the
+   * gaps in `abstained`, for the caller to warn with (ADR-0052).
+   *
+   * Throws on an unknown id, an id `parseRef` cannot invert, and a target whose
+   * Header-Block this store cannot read (a bare issue: decorate it first).
+   */
+  block(id: string, by: string): Promise<BlockResult>;
+
+  /**
+   * Remove ONE dependency edge — the counterpart of {@link block} (ADR-0054
+   * decision 3). Removes the ref from the body and deletes the native edge
+   * where the host has one, then reads the issue back. If the union read still
+   * reports `by`, it throws {@link UnblockResidueError} naming where the ref
+   * still comes from — the body or the native edge — rather than reporting a
+   * removal every gate would contradict. A ref that was never present, in the
+   * body or natively, is a no-op that succeeds (`removed: false`).
+   *
+   * Throws on the same inputs {@link block} does.
+   */
+  unblock(id: string, by: string): Promise<UnblockResult>;
 
   /**
    * Amend an issue's AUTHORED content (the Amend facet, ADR-0025): the
@@ -1778,8 +1992,8 @@ export interface IssueStore {
    * {@link applyTriage}) — an empty patch, a blank section heading, or a
    * reserved-heading section all throw before anything is written. Surgical:
    * every unmodeled line/section is preserved. Touches ONLY the title + free
-   * prose — never the Header-Block fields (Files/AC/Blocked by belong to
-   * `annotate`), never the claim ledger, never the triage dimension, never the
+   * prose — never the Header-Block fields (Files/AC belong to `annotate`,
+   * Blocked by to {@link block}/{@link unblock}), never the claim ledger, never the triage dimension, never the
    * open/closed state. Throws on an unknown id, a reserved heading, or an empty
    * patch.
    *

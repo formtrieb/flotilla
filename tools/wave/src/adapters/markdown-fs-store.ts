@@ -47,6 +47,11 @@ import {
   validateAmendPatch,
   validateAnnotatePatch,
   filesToAppend,
+  checkBlockerChain,
+  BlockCycleError,
+  UnblockResidueError,
+  type BlockResult,
+  type UnblockResult,
   type IssueStore,
   type IssueStoreConformanceHooks,
   type CreateInput,
@@ -328,6 +333,115 @@ export class MarkdownFsStore implements IssueStore {
       source = replaceH1Title(source, located.fileName, patch.title);
     }
     await writeFile(located.path, source, 'utf-8'); // single atomic write (no partial application)
+  }
+
+  // ── block / unblock (ADR-0054 — one dependency edge at a time) ─────────────
+  //
+  // This store's ONE blocker representation is the `**Blocked by:**` header
+  // line, so both verbs edit that line surgically — entry by entry, keeping any
+  // `← annotation` on the entries they do not touch — and there is no native
+  // edge to mirror or delete.
+  async block(id: string, by: string): Promise<BlockResult> {
+    const ref = this.parseRef(by);
+    const { path, source, refs } = await this.blockedByLine(id, 'block');
+    if (refs.some((r) => this.refKey(r) === this.refKey(ref))) return { added: false };
+
+    const chain = await checkBlockerChain({
+      targetId: id,
+      blockerId: by,
+      read: (x) => this.read(x),
+      parseRef: (x) => this.parseRef(x),
+      idForRef: (r) => this.idForRef(r),
+    });
+    if (chain.kind === 'cycle') throw new BlockCycleError(id, by, chain.cycle);
+
+    const raw = readField(source, 'Blocked by');
+    const token = refToken(ref);
+    const value = refs.length === 0 || raw === undefined ? token : `${raw}, ${token}`;
+    // An absent line goes in after `**Worker:**` (a one-line field, so no
+    // multi-line `**Files:**` list is split); the parser is order-free.
+    const next = upsertField(source, 'Blocked by', value, { afterField: 'Worker' });
+    if (!createHeaderParser(this.schema).parse(next).ok) {
+      throw new Error(
+        `block: writing the \`**Blocked by:**\` line would not leave issue ${id} readable ` +
+          '— nothing was written.',
+      );
+    }
+    await writeFile(path, next, 'utf-8');
+    return { added: true, ...(chain.kind === 'abstained' ? { abstained: chain.gaps } : {}) };
+  }
+
+  async unblock(id: string, by: string): Promise<UnblockResult> {
+    const ref = this.parseRef(by);
+    const key = this.refKey(ref);
+    const { path, source, refs } = await this.blockedByLine(id, 'unblock');
+    if (!refs.some((r) => this.refKey(r) === key)) return { removed: false };
+
+    const raw = readField(source, 'Blocked by') ?? '';
+    const kept = raw
+      .split(',')
+      .map((e) => e.trim())
+      .filter((e) => e !== '')
+      .filter((e) => {
+        const r = parseRefToken(e.replace(/\s+←.*$/, '').trim());
+        return r === null || this.refKey(r) !== key;
+      });
+    await writeFile(
+      path,
+      upsertField(source, 'Blocked by', kept.length === 0 ? 'none' : kept.join(', ')),
+      'utf-8',
+    );
+
+    // Read back through the same read every gate uses (decision 3).
+    const after = await this.read(id);
+    if (after.blockedBy !== 'none' && after.blockedBy.some((r) => this.refKey(r) === key)) {
+      throw new UnblockResidueError(id, by, ['body']);
+    }
+    return { removed: true };
+  }
+
+  /** The issue's file, its source and its parsed `**Blocked by:**` refs — or a throw on a bare/malformed issue. */
+  private async blockedByLine(
+    id: string,
+    verb: 'block' | 'unblock',
+  ): Promise<{ path: string; source: string; refs: IssueRef[] }> {
+    const located = await this.locate(id);
+    if (!located) throw new Error(`Issue not found: ${id}`);
+    const source = await readFile(located.path, 'utf-8');
+    const parsed = createHeaderParser(this.schema).parse(source);
+    if (!parsed.ok) {
+      // A decorated issue whose ONLY gap is the `**Blocked by:**` line itself
+      // (`annotate` cannot write it) is exactly what `block` exists for: it
+      // reads as "no blockers yet", and block writes the line.
+      if (
+        parsed.errors.every((e) => e.field === 'Blocked by' && /is missing/.test(e.message))
+      ) {
+        return { path: located.path, source, refs: [] };
+      }
+      const msg = parsed.errors.map((e) => e.message).join('; ');
+      throw new Error(
+        `${verb}: issue ${id} has no readable Header-Block (${msg}), so there is no ` +
+          '`**Blocked by:**` line to write to. A bare issue has to be decorated first ' +
+          `(annotate), then ${verb}ed.`,
+      );
+    }
+    const blockedBy = parsed.header.blockedBy;
+    return { path: located.path, source, refs: blockedBy === 'none' ? [] : blockedBy };
+  }
+
+  /** A ref's identity on this store: a slug-less ref means this store's own slug. */
+  private refKey(ref: IssueRef): string {
+    return `${ref.slug ?? this.slug}#${ref.issue}`;
+  }
+
+  /**
+   * The id a ref resolves to on this store, or `null` for a ref naming another
+   * slug's tree — `locate` ignores the slug part of an id, so resolving that
+   * ref here would silently read THIS tree's issue of the same number.
+   */
+  private idForRef(ref: IssueRef): string | null {
+    if (ref.slug !== undefined && ref.slug !== this.slug) return null;
+    return this.idFor(String(ref.issue).padStart(2, '0'));
   }
 
   // ── read ────────────────────────────────────────────────────────────────
@@ -1120,6 +1234,19 @@ function readField(source: string, name: string): string | undefined {
   const re = new RegExp(`^\\*\\*${escapeRe(name)}:\\*\\*\\s*(.*)$`, 'm');
   const m = re.exec(header);
   return m ? m[1].trim() : undefined;
+}
+
+/** A ref as the `**Blocked by:**` line spells it — the header serializer's own form. */
+function refToken(ref: IssueRef): string {
+  return ref.slug ? `${ref.slug}#${ref.issue}` : `#${ref.issue}`;
+}
+
+/** One annotation-free `**Blocked by:**` entry back to a ref, or `null` when it is not one. */
+function parseRefToken(token: string): IssueRef | null {
+  const cross = /^([a-z0-9][a-z0-9-]*)#(\d+)$/i.exec(token);
+  if (cross) return { slug: cross[1], issue: Number(cross[2]) };
+  const same = /^#(\d+)$/.exec(token);
+  return same ? { issue: Number(same[1]) } : null;
 }
 
 /**

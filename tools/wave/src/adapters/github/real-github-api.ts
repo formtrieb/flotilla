@@ -608,8 +608,9 @@ export class RealGitHubApi implements GitHubApi {
    *      which the docs pin at **201**, not 200.
    *
    * ADDITIVE-ONLY by construction: this method has no delete/update branch
-   * (ADR-0020 — never remove a dependency), which is why the documented
-   * `DELETE …/dependencies/blocked_by/{issue_id}` companion is not implemented.
+   * (ADR-0020 — the mirror never removes a dependency). The documented delete
+   * is its own method, {@link removeBlockedBy}, reached only by
+   * `issue-store unblock` (ADR-0054).
    *
    * Documented form: docs.github.com/en/rest/issues/issue-dependencies, read
    * 2026-08-03. UNPROVEN LIVE — the write needs a credential this slice does not
@@ -631,21 +632,63 @@ export class RealGitHubApi implements GitHubApi {
   }
 
   /**
+   * The native blocked-by DELETE (ADR-0054 decision 3 — the edge's first delete
+   * path, reached only by `issue-store unblock`). Two calls, in the same order
+   * {@link addBlockedBy} makes them:
+   *
+   *   1. resolve the BLOCKER's DATABASE id — the path's `{issue_id}` is "The id
+   *      of the blocking issue to remove as a dependency", the same database id
+   *      the add POSTs, NOT the issue number. An unknown blocker fails here,
+   *      before the DELETE is sent.
+   *   2. `DELETE …/issues/{blockedNumber}/dependencies/blocked_by/{issue_id}`,
+   *      which the docs pin at **200** (answering the issue object).
+   *
+   * Any other status throws, carrying GitHub's own message — the store records
+   * it and lets its read-back decide whether the edge survived.
+   *
+   * Documented form: docs.github.com/en/rest/issues/issue-dependencies, "Remove
+   * dependency an issue is blocked by", read 2026-09-26. The page's curl
+   * example sends `X-GitHub-Api-Version: 2026-03-10`; this seam keeps its one
+   * pinned `2022-11-28`, the version {@link getBlockedBy} was live-confirmed
+   * under for the same endpoint family (deliberate — see that docblock).
+   * UNPROVEN LIVE: the delete needs a credential and a live edge this slice
+   * does not have. The first `issue-store unblock` against a github-store
+   * consumer is the live gate.
+   */
+  async removeBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void> {
+    const blockerId = await this.issueDatabaseId(blockerNumber, 'removeBlockedBy');
+    const res = await this.send(
+      'DELETE',
+      `${this.base()}/issues/${blockedNumber}/dependencies/blocked_by/${blockerId}`,
+    );
+    if (res.status !== 200) {
+      throw new GitHubApiError(
+        res.status,
+        'removeBlockedBy',
+        ghMessage(res.json, 'removeBlockedBy'),
+      );
+    }
+  }
+
+  /**
    * An issue's DATABASE id (`id`) from its number — the key the dependency
    * endpoints take. Kept private: the seam speaks issue numbers, so the database
    * id never leaves this file (the same containment `RealLinearApi` gives
-   * Linear's UUIDs).
+   * Linear's UUIDs). `op` names the dependency call it resolves for.
    */
-  private async issueDatabaseId(number: number): Promise<number> {
+  private async issueDatabaseId(
+    number: number,
+    op: 'addBlockedBy' | 'removeBlockedBy' = 'addBlockedBy',
+  ): Promise<number> {
     const res = await this.send('GET', `${this.base()}/issues/${number}`);
     if (res.status !== 200) {
-      throw new GitHubApiError(res.status, 'addBlockedBy', ghMessage(res.json, 'addBlockedBy'));
+      throw new GitHubApiError(res.status, op, ghMessage(res.json, op));
     }
     const id = Number((res.json as Record<string, unknown>)?.id);
     if (!Number.isInteger(id)) {
       throw new GitHubApiError(
         res.status,
-        'addBlockedBy',
+        op,
         `issue #${number} carries no database id — cannot key the dependency write`,
       );
     }

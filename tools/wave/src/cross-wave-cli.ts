@@ -64,8 +64,11 @@ export const CROSS_WAVE_CONTRACT: VerbContract = defineVerb({
     shape:
       '{ parallelSafe, crossWaveConflicts: [ { a, b, files: [ <path> ] } ], ' +
       'intraWaveConflicts: [ <same cell> ], ' +
-      'intraWaveBlockedByPairs: [ { blocked, blocker, resolved } ], warnings?: [ <text> ] }',
-    trail: 'warnings appears ONLY when an unexpanded glob made parallelSafe unreliable',
+      'intraWaveBlockedByPairs: [ { blocked, blocker, resolved } ], ' +
+      'blockedByCycles: [ [ <id> ] ], warnings?: [ <text> ] }',
+    trail:
+      'warnings appears ONLY when an unexpanded glob made parallelSafe unreliable; ' +
+      'each blockedByCycles entry names every issue on one dependency cycle (ADR-0054)',
   },
 });
 
@@ -135,6 +138,16 @@ export function runCrossWave(args: string[]): number {
     if (result.warnings && result.warnings.length > 0) {
       process.stderr.write(
         result.warnings.map((w) => `warning: ${w}`).join('\n') + '\n',
+      );
+    }
+    // A dependency cycle holds every row on it forever (ADR-0054 decision 4).
+    // Echoed to stderr for the same reason the warnings are: a caller reading
+    // only `parallelSafe` off stdout must not miss it. Exit stays 0 — the check
+    // ran and reported; what to do about the cycle is the Operator's call.
+    for (const cycle of result.blockedByCycles) {
+      process.stderr.write(
+        `cycle: ${[...cycle, cycle[0]].join(' → ')} (each blocked by the next) — ` +
+          'no row on it can ever be dispatched until one edge is removed (issue-store unblock)\n',
       );
     }
     printJson(result);

@@ -396,11 +396,26 @@ export function replaceSection(body: string, name: string, bodyLines: string[]):
  * match instead means the read-back always sees what was just written.
  *
  * Throws on a {@link RESERVED_SECTIONS} heading (Files / Blocked by / Unblocks /
- * Acceptance criteria) — those are modeled Header-Block sections owned by
- * `annotate` (decorate, ADR-0010); amend must not be able to clobber them.
+ * Acceptance criteria) — modeled Header-Block sections amend must not be able
+ * to clobber. The refusal names the verb that writes each one: `annotate`
+ * (decorate, ADR-0010) for Files / Unblocks / Acceptance criteria, and
+ * `issue-store block` / `unblock` for Blocked by (ADR-0054 decision 1).
  */
 export function upsertSection(body: string, heading: string, markdown: string): string {
-  if (RESERVED_SECTIONS.includes(heading.trim().toLowerCase())) {
+  const normalized = heading.trim().toLowerCase();
+  if (normalized === 'blocked by') {
+    // The one reserved heading `annotate` does NOT write — its patch carries
+    // no `blockedBy`. Pointing here at `annotate` sent the caller to a verb
+    // that refuses the field too, so this refusal names the verb pair that
+    // does write it, one edge at a time (ADR-0054).
+    throw new Error(
+      `amend cannot write the managed section "${heading}" ` +
+        `(${RESERVED_SECTIONS.join(', ')}) — a dependency is written one edge at a time: ` +
+        '`issue-store block <id> --by <blocker-id>` adds one, ' +
+        '`issue-store unblock <id> --by <blocker-id>` removes one (ADR-0054).',
+    );
+  }
+  if (RESERVED_SECTIONS.includes(normalized)) {
     throw new Error(
       `amend cannot write the managed section "${heading}" ` +
         `(${RESERVED_SECTIONS.join(', ')}) — those belong to \`annotate\` (decorate). ` +
@@ -426,6 +441,58 @@ export function appendBodySections(
     out += `\n\n## ${s.heading}\n\n${s.markdown.trimEnd()}`;
   }
   return out + '\n';
+}
+
+/**
+ * Rewrite the `## Blocked by` section's ref list to `blockedBy` — the body write
+ * behind `issue-store block` / `unblock` (ADR-0054 decision 2: the body section
+ * stays the authoritative record). Only the ref list is replaced: every other
+ * section and line is kept, and so is any codec-own bold-metadata line a
+ * legacy-ordered body carries INSIDE this section (the `**Parent:**` shape
+ * {@link BOLD_METADATA_LINE} describes), which a plain {@link replaceSection}
+ * would drop. An absent section is appended fresh; an empty list is written as
+ * `none`, the token {@link serializeBody} writes.
+ */
+export function writeBlockedBy(body: string, blockedBy: BlockedBy): string {
+  const value =
+    blockedBy === 'none' || blockedBy.length === 0
+      ? 'none'
+      : blockedBy.map(refToString).join(', ');
+  const lines = body.split('\n');
+  const start = lines.findIndex((l) => /^##\s+Blocked by\s*$/i.test(l));
+  if (start < 0) return replaceSection(body, 'Blocked by', [value]);
+  let end = start + 1;
+  while (end < lines.length && !/^##\s+/.test(lines[end])) end++;
+  const kept = lines.slice(start + 1, end).filter((l) => BOLD_METADATA_LINE.test(l.trim()));
+  const block = ['', value, '', ...(kept.length > 0 ? [...kept, ''] : [])];
+  lines.splice(start + 1, end - (start + 1), ...block);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * The body's own `Blocked by` refs, for `block` / `unblock` to edit — or a throw
+ * when the body has no Header-Block this codec can read. A BARE issue is the
+ * ordinary case: it carries no `Blocked by` record at all (its dependencies, if
+ * any, are native edges drawn at create — ADR-0044), so there is no
+ * authoritative record for these verbs to write. They refuse, naming
+ * decoration as the way forward, rather than minting a partial Header-Block.
+ */
+export function decoratedBlockedBy(
+  id: string,
+  body: string,
+  verb: 'block' | 'unblock',
+): IssueRef[] {
+  let parsed: ParsedBody;
+  try {
+    parsed = parseBody(body);
+  } catch (err) {
+    throw new Error(
+      `${verb}: issue ${id} has no readable Header-Block (${(err as Error).message}), ` +
+        'so there is no `Blocked by` record to write to. A bare issue has to be ' +
+        `decorated first (annotate), then ${verb}ed.`,
+    );
+  }
+  return parsed.blockedBy === 'none' ? [] : parsed.blockedBy;
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────

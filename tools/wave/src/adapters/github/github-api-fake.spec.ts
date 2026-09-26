@@ -196,6 +196,33 @@ describe('InMemoryGitHubApi issue dependencies (ADR-0020 read-union + write-mirr
     expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
   });
 
+  it('removeBlockedBy deletes every occurrence of the edge, and succeeds on an absent one (ADR-0054)', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: blocked } = await api.createIssue({ title: 'blocked', body: '', labels: [] });
+    const { number: keep } = await api.createIssue({ title: 'keep', body: '', labels: [] });
+    const { number: drop } = await api.createIssue({ title: 'drop', body: '', labels: [] });
+    await api.addBlockedBy(blocked, keep);
+    await api.addBlockedBy(blocked, drop);
+    await api.addBlockedBy(blocked, drop); // double-represented
+    await api.removeBlockedBy(blocked, drop);
+    expect(await api.getBlockedBy(blocked)).toEqual([keep]);
+    await expect(api.removeBlockedBy(blocked, drop)).resolves.toBeUndefined();
+    await expect(api.removeBlockedBy(blocked, 999)).rejects.toThrow(/not found/);
+  });
+
+  it('failDependencyDeletes makes removeBlockedBy reject and the edge survive; null clears it', async () => {
+    const api = new InMemoryGitHubApi();
+    const { number: blocked } = await api.createIssue({ title: 'blocked', body: '', labels: [] });
+    const { number: blocker } = await api.createIssue({ title: 'blocker', body: '', labels: [] });
+    await api.addBlockedBy(blocked, blocker);
+    api.failDependencyDeletes(new Error('delete refused'));
+    await expect(api.removeBlockedBy(blocked, blocker)).rejects.toThrow(/delete refused/);
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+    api.failDependencyDeletes(null);
+    await api.removeBlockedBy(blocked, blocker);
+    expect(await api.getBlockedBy(blocked)).toEqual([]);
+  });
+
   it('addNativeDependency drives the read side without going through the production write', async () => {
     const api = new InMemoryGitHubApi();
     const { number: blocked } = await api.createIssue({ title: 'blocked', body: '', labels: [] });

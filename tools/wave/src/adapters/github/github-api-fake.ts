@@ -44,6 +44,8 @@ export class InMemoryGitHubApi implements GitHubApi {
   private readonly nativeBlockedBy = new Map<number, number[]>();
   /** When set, the production {@link addBlockedBy} mirror rejects with it (models a rejected dependency write). */
   private dependencyWriteError: Error | undefined;
+  /** When set, {@link removeBlockedBy} rejects with it (models a refused native delete). */
+  private dependencyDeleteError: Error | undefined;
   private counter = 0; // per-instance; never reset between calls
   /** Store-preflight substrate (FOR-12): does the ambient token merge PRs? Default yes. */
   private canMergePrs = true;
@@ -263,6 +265,37 @@ export class InMemoryGitHubApi implements GitHubApi {
     const list = this.nativeBlockedBy.get(blockedNumber) ?? [];
     list.push(blockerNumber);
     this.nativeBlockedBy.set(blockedNumber, list);
+  }
+
+  /**
+   * Delete ONE native dependency (ADR-0054's unblock path) — every occurrence
+   * of `blockerNumber` in `blockedNumber`'s native list, so a double-represented
+   * edge goes too. Both sides are resolved first, modelling
+   * `RealGitHubApi.removeBlockedBy`'s database-id resolution. An injected
+   * {@link failDependencyDeletes} error models a refused `DELETE
+   * …/dependencies/blocked_by/{issue_id}`, and the edge then survives. Deleting
+   * an edge that is not there succeeds silently.
+   */
+  async removeBlockedBy(blockedNumber: number, blockerNumber: number): Promise<void> {
+    if (!this.issues.has(blockedNumber)) {
+      throw new Error(`GitHub issue not found: #${blockedNumber}`);
+    }
+    if (!this.issues.has(blockerNumber)) {
+      throw new Error(`GitHub issue not found: #${blockerNumber}`);
+    }
+    if (this.dependencyDeleteError) throw this.dependencyDeleteError;
+    const list = (this.nativeBlockedBy.get(blockedNumber) ?? []).filter((b) => b !== blockerNumber);
+    this.nativeBlockedBy.set(blockedNumber, list);
+  }
+
+  /**
+   * Test affordance: force {@link removeBlockedBy} to REJECT with `error` (a
+   * refused native delete), or pass `null` to clear it. NOT part of `GitHubApi`
+   * — the unblock specs reach it to prove a surviving native edge is named, not
+   * reported as removed.
+   */
+  failDependencyDeletes(error: Error | null): void {
+    this.dependencyDeleteError = error ?? undefined;
   }
 
   /**

@@ -12,13 +12,114 @@ import {
   AnnotatePatchError,
   filesToAppend,
   appendToFilesSection,
+  checkBlockerChain,
+  formatBlockerCycle,
+  BlockCycleError,
+  UnblockResidueError,
 } from './issue-store';
+import type { IssueRef } from '../contract';
 import type { CreateInput } from './issue-store';
 import {
   AcceptanceCriteriaShapeError,
   assertAcceptanceCriteriaShape,
 } from './body-codec';
 import { computeGoalFrontier, type GoalMemberFacts } from '../goal-frontier';
+
+// ── checkBlockerChain (ADR-0054 decision 4) — the walk every store's block() runs
+describe('checkBlockerChain — follow the blocker chain from the new ref', () => {
+  /** A toy store over plain numeric ids: `graph[id]` = the ids it is blocked by. */
+  function walk(
+    graph: Record<string, string[]>,
+    target: string,
+    blocker: string,
+    opts: { failing?: string[]; foreign?: boolean } = {},
+  ) {
+    return checkBlockerChain({
+      targetId: target,
+      blockerId: blocker,
+      read: async (id) => {
+        if (opts.failing?.includes(id)) throw new Error(`cannot read ${id}`);
+        const b = graph[id] ?? [];
+        return {
+          blockedBy:
+            b.length === 0
+              ? 'none'
+              : b.map((x): IssueRef => (x.startsWith('x') ? { slug: 'x', issue: Number(x.slice(1)) } : { issue: Number(x) })),
+        };
+      },
+      parseRef: (id) => ({ issue: Number(id) }),
+      idForRef: (ref) => (ref.slug !== undefined ? null : String(ref.issue)),
+    });
+  }
+
+  it('is clear when the chain never reaches the target', async () => {
+    expect(await walk({ '2': ['3'], '3': [] }, '1', '2')).toEqual({ kind: 'clear' });
+  });
+
+  it('reports a direct cycle, target first and last', async () => {
+    expect(await walk({ '2': ['1'] }, '1', '2')).toEqual({ kind: 'cycle', cycle: ['1', '2', '1'] });
+  });
+
+  it('reports a transitive cycle across three issues, naming every one in order', async () => {
+    expect(await walk({ '2': ['3'], '3': ['1'] }, '1', '2')).toEqual({
+      kind: 'cycle',
+      cycle: ['1', '2', '3', '1'],
+    });
+  });
+
+  it('reports a self-block as a cycle without reading anything', async () => {
+    expect(await walk({}, '1', '1', { failing: ['1'] })).toEqual({
+      kind: 'cycle',
+      cycle: ['1', '1'],
+    });
+  });
+
+  it('terminates on a pre-existing cycle that does not involve the target', async () => {
+    expect(await walk({ '2': ['3'], '3': ['2'] }, '1', '2')).toEqual({ kind: 'clear' });
+  });
+
+  it('ABSTAINS — never clear — when a read along the chain fails', async () => {
+    const r = await walk({ '2': ['3'] }, '1', '2', { failing: ['3'] });
+    expect(r.kind).toBe('abstained');
+    expect(r.kind === 'abstained' && r.gaps).toEqual([
+      { id: '3', reason: 'reading it failed: cannot read 3' },
+    ]);
+  });
+
+  it('abstains on a ref the store cannot address, naming who holds it', async () => {
+    const r = await walk({ '2': ['x9'] }, '1', '2');
+    expect(r.kind === 'abstained' && r.gaps[0]).toEqual({
+      id: 'x#9',
+      reason: '2 is blocked by it, and this store cannot read it',
+    });
+  });
+
+  it('a cycle found on one branch OUTRANKS a gap on another — it is evidence', async () => {
+    expect(await walk({ '2': ['3', '4'], '4': ['1'] }, '1', '2', { failing: ['3'] })).toEqual({
+      kind: 'cycle',
+      cycle: ['1', '2', '4', '1'],
+    });
+  });
+});
+
+describe('the block / unblock refusals', () => {
+  it('BlockCycleError prints the cycle and carries it', () => {
+    const err = new BlockCycleError('1', '2', ['1', '2', '3', '1']);
+    expect(err.message).toContain(formatBlockerCycle(['1', '2', '3', '1']));
+    expect(err.message).toContain('1 → 2 → 3 → 1');
+    expect(err.message).toContain('Nothing was written');
+    expect(err.cycle).toEqual(['1', '2', '3', '1']);
+  });
+
+  it('UnblockResidueError names each remaining source in words', () => {
+    expect(new UnblockResidueError('1', '2', ['native-edge']).message).toMatch(
+      /still comes from the native edge/,
+    );
+    expect(new UnblockResidueError('1', '2', ['body', 'native-edge']).message).toMatch(
+      /still comes from the body and the native edge/,
+    );
+  });
+});
 
 describe('withTriageDisclaimer (ADR-0015)', () => {
   it('prepends the verbatim AI-provenance disclaimer, blank-line separated', () => {

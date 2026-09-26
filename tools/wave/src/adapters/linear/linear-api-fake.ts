@@ -145,6 +145,8 @@ export class InMemoryLinearApi implements LinearApi {
   private githubIntegrationInstalled = true;
   /** When set, the production {@link addBlockedBy} mirror rejects with it (models a failed `issueRelationCreate`). */
   private relationWriteError: Error | undefined;
+  /** When set, {@link removeBlockedBy} rejects with it (models a refused `issueRelationDelete`). */
+  private relationDeleteError: Error | undefined;
   /** identifier → remaining {@link setState} calls to silently drop (FOR-64 / consumer KW-F2 fault injector). */
   private readonly droppedStateWrites = new Map<string, number>();
   private counter = 0; // per-instance; never reset between calls
@@ -295,6 +297,34 @@ export class InMemoryLinearApi implements LinearApi {
     const list = this.nativeBlockedBy.get(blockedIdentifier) ?? [];
     list.push(blockerIdentifier);
     this.nativeBlockedBy.set(blockedIdentifier, list);
+  }
+
+  /**
+   * Delete the native relation(s) saying `blockerIdentifier` blocks
+   * `blockedIdentifier` (ADR-0054's unblock path) — every occurrence, so a
+   * double-represented relation goes too. Both sides are resolved first via
+   * {@link mustGet}, modelling `RealLinearApi.removeBlockedBy`. An injected
+   * {@link failRelationDeletes} error models a refused `issueRelationDelete`,
+   * and the relation then survives. A relation that is not there succeeds.
+   */
+  async removeBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void> {
+    this.mustGet(blockedIdentifier);
+    this.mustGet(blockerIdentifier);
+    if (this.relationDeleteError) throw this.relationDeleteError;
+    const list = (this.nativeBlockedBy.get(blockedIdentifier) ?? []).filter(
+      (b) => b !== blockerIdentifier,
+    );
+    this.nativeBlockedBy.set(blockedIdentifier, list);
+  }
+
+  /**
+   * Test affordance: force {@link removeBlockedBy} to REJECT with `error` (a
+   * refused `issueRelationDelete`), or pass `null` to clear it. NOT part of
+   * `LinearApi` — the unblock specs reach it to prove a surviving native
+   * relation is named, not reported as removed.
+   */
+  failRelationDeletes(error: Error | null): void {
+    this.relationDeleteError = error ?? undefined;
   }
 
   /**

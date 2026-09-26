@@ -371,6 +371,10 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     tickAcs: 'Adapter-internal body-codec helper (see ParsedBody above).',
     upsertLine: 'Adapter-internal body-codec helper (see ParsedBody above).',
     upsertSection: 'Adapter-internal body-codec helper (see ParsedBody above).',
+    writeBlockedBy:
+      "Adapter-internal body-codec helper (see ParsedBody above) — the `## Blocked by` section write GitHub's and Linear's `block`/`unblock` share (ADR-0054).",
+    decoratedBlockedBy:
+      "Adapter-internal body-codec helper (see ParsedBody above) — reads the body's own `Blocked by` refs for `block`/`unblock`, refusing a bare body (ADR-0054).",
   },
   // ─── the Bitbucket LANDING adapter ──────────────────────────────────────
   //
@@ -443,6 +447,12 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
       "filesAdd's dedup-and-order rule, shared by the three adapters' annotate() so none carries its own copy — adapter plumbing, not a consumer-facing API.",
     appendToFilesSection:
       "filesAdd's surgical write over the `## Files` body section GitHub and Linear share — adapter plumbing, not a consumer-facing API.",
+    checkBlockerChain:
+      "`block`'s cycle walk (ADR-0054 decision 4), shared by the three adapters' block() so none carries its own copy. Every block() already runs it before writing, so a consumer calling it by hand would be asking a question block() answers on its behalf — the outcome it produces (BlockCycleError, or BlockResult.abstained) is root-exported, the walk stays the seam, the classifyCreateInput stance.",
+    BlockerChainCheck:
+      "checkBlockerChain's return type — module-local with the walk it describes (see above). A consumer meets its two non-clear arms as BlockCycleError and BlockResult.abstained, both root-exported.",
+    formatBlockerCycle:
+      "The one rendering of a cycle BlockCycleError's message uses — adapter plumbing; a consumer reads the cycle off BlockCycleError.cycle.",
   },
   './adapters/linear/linear-api-fake': {
     InMemoryLinearApi:

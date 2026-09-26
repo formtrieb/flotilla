@@ -32,6 +32,27 @@ describe('InMemoryLinearApi native blocked-by write half (ADR-0020)', () => {
     await expect(api.addBlockedBy(blocked, blocker)).resolves.toBeUndefined();
     expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
   });
+
+  it('removeBlockedBy deletes every occurrence of the relation, and succeeds on an absent one (ADR-0054)', async () => {
+    const { api, blocked, blocker } = await twoIssues();
+    await api.addBlockedBy(blocked, blocker);
+    await api.addBlockedBy(blocked, blocker); // double-represented
+    await api.removeBlockedBy(blocked, blocker);
+    expect(await api.getBlockedBy(blocked)).toEqual([]);
+    await expect(api.removeBlockedBy(blocked, blocker)).resolves.toBeUndefined();
+    await expect(api.removeBlockedBy(blocked, 'EX-999')).rejects.toThrow(/EX-999/);
+  });
+
+  it('failRelationDeletes forces removeBlockedBy to reject and the relation to survive; clearable', async () => {
+    const { api, blocked, blocker } = await twoIssues();
+    await api.addBlockedBy(blocked, blocker);
+    api.failRelationDeletes(new Error('relation delete boom'));
+    await expect(api.removeBlockedBy(blocked, blocker)).rejects.toThrow(/boom/);
+    expect(await api.getBlockedBy(blocked)).toEqual([blocker]);
+    api.failRelationDeletes(null);
+    await api.removeBlockedBy(blocked, blocker);
+    expect(await api.getBlockedBy(blocked)).toEqual([]);
+  });
 });
 
 // ── Document facet: the fake models a Document's TEAM attachment (ADR-0017

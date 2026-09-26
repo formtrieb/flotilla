@@ -67,6 +67,13 @@
  *              (#898), so the two verbs share one rule rather than
  *              two copies of it.
  *   amend    <id> --patch <AmendPatch.json>        → amends title / free-prose sections (ADR-0025); nothing on stdout (a receipt with --json)
+ *   block    <id> --by <blocker-id>                → records ONE dependency found after filing (ADR-0054); nothing on stdout (a receipt with --json)
+ *              Refuses (exit 1, nothing written) an edge that would close a
+ *              dependency cycle, printing it; a failed read along the chain
+ *              abstains with a stderr `warning:` line and writes anyway.
+ *   unblock  <id> --by <blocker-id>                → removes ONE dependency (body ref + native edge, ADR-0054); nothing on stdout (a receipt with --json)
+ *              Reads the issue back and exits 1, naming the body or the
+ *              native edge, if the ref is still reported.
  *   transition <id> <queued|in-flight|in-review>   → writes one claim rung; nothing on stdout (a receipt with --json)
  *   unclaim  <id>                                  → drops the claim (queued→available); nothing on stdout (a receipt with --json)
  *   close    <id> <prUrl> [--acked 0,2,3]          → records closing facts (done-reconcile; FOR-13 doneState fallback),
@@ -124,8 +131,9 @@
  * exposes neither, so neither has a runner here (sight, never permission).
  *
  * `--json` on a SILENT WRITE (ADR-0051 decision 7, #648's settled shape). The
- * nine ops tagged "nothing on stdout" above — annotate, amend, transition,
- * unclaim, flag, clear-flag, triage-apply, triage-close, goal-assign — are this
+ * eleven ops tagged "nothing on stdout" above — annotate, amend, block, unblock,
+ * transition, unclaim, flag, clear-flag, triage-apply, triage-close,
+ * goal-assign (block/unblock joined the nine in ADR-0054) — are this
  * group's `silent-write` output class, and each answers the router-global
  * `--json` with exactly ONE receipt:
  *
@@ -134,7 +142,7 @@
  * A receipt says what was SENT, never what the tracker now reads. Every value in
  * `sent` is one this runner already held before it called the store, so no op
  * gains a read-back and none gains a second network call to produce one — see
- * {@link WriteReceipt}. Without `--json` the stdout of all nine stays
+ * {@link WriteReceipt}. Without `--json` the stdout of all eleven stays
  * byte-identical to what it has always been (empty), and `--json` never changes
  * an exit code: a refused write still exits non-zero and prints no receipt. Each
  * op's own contract section below names its receipt shape.
@@ -164,6 +172,7 @@ import {
 } from './adapters/body-codec';
 import type {
   IssueStore,
+  BlockerChainGap,
   CreateInput,
   AnnotatePatch,
   AmendPatch,
@@ -204,6 +213,8 @@ type Op =
   | 'parse-ref'
   | 'annotate'
   | 'amend'
+  | 'block'
+  | 'unblock'
   | 'transition'
   | 'unclaim'
   | 'close'
@@ -227,7 +238,7 @@ type Op =
   | 'goal-publish-update';
 
 const FULL_OP_LIST =
-  'issue-store <create|read|parse-ref|annotate|amend|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-create-member|goal-frontier|goal-publish-update> [...args] [--config <path>]';
+  'issue-store <create|read|parse-ref|annotate|amend|block|unblock|transition|unclaim|flag|clear-flag|close|read-closing|listOpen|listClaimed|publishDocument|readDocument|listDocuments|triage-read|triage-apply|triage-close|goal-create|goal-read|goal-list|goal-assign|goal-create-member|goal-frontier|goal-publish-update> [...args] [--config <path>]';
 
 /**
  * `--config <path>` — the ONE flag every op of this group accepts. It selects
@@ -258,6 +269,19 @@ const INPUT_OPTIONAL: FlagContract = {
   value: 'one',
   valueType: 'path',
   placeholder: '<PublishGoalUpdateInput.json>',
+};
+
+/**
+ * `--by <blocker-id>` on `block` / `unblock` (ADR-0054): the blocker's id as this
+ * store mints it. The runner inverts it through the store's own `parseRef`, the
+ * same seam `parse-ref` exposes, so no caller parses an id by hand.
+ */
+const BY_FLAG: FlagContract = {
+  canonical: '--by',
+  value: 'one',
+  valueType: 'id',
+  required: true,
+  placeholder: '<blocker-id>',
 };
 
 /** `--patch <path>` on the two patch ops — the payload type named, as above. */
@@ -412,6 +436,35 @@ const ISSUE_STORE_OP_SHAPES: Readonly<
       label: '--json receipt',
       shape: '{ op, id, sent: { title?, sections? } }',
       trail: 'what was written',
+    },
+  }),
+  block: issueStoreOp(['<id>'], 'silent-write', [BY_FLAG], {
+    notes: [
+      '  records ONE dependency found after filing: <id> is blocked by <blocker-id> (ADR-0054)',
+      '  <blocker-id> is an id as this store mints it — inverted through parse-ref, never by hand',
+      '  the body\'s Blocked by record gains the ref; a native edge is mirrored best-effort;',
+      '    a ref already recorded is a no-op (exit 0)',
+      '  REFUSES (exit 1, nothing written) an edge that closes a dependency cycle, printing it;',
+      '    a chain read that fails abstains: a stderr "warning:" line, and the edge is written',
+    ],
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent: { by } }',
+      trail: 'the blocker id handed over',
+    },
+  }),
+  unblock: issueStoreOp(['<id>'], 'silent-write', [BY_FLAG], {
+    notes: [
+      '  removes ONE dependency: the ref leaves the body, the native edge is deleted (ADR-0054)',
+      '  then reads the issue back — if the ref is STILL reported, exit 1 naming where it',
+      '    still comes from (the body, or the native edge); a ref never present is a no-op',
+    ],
+    outputNote: 'nothing on success (exit 0, empty stdout)',
+    json: {
+      label: '--json receipt',
+      shape: '{ op, id, sent: { by } }',
+      trail: 'the blocker id handed over',
     },
   }),
   transition: issueStoreOp(['<id>', `<${VALID_RUNGS.join('|')}>`], 'silent-write', [], {
@@ -707,7 +760,7 @@ function usage(message: string, op?: Op): number {
  * config-governed target (`unclaimTarget`), not about what this runner sent.
  *
  * Contract from the day it lands (ADR-0035): `issue-store-cli.spec.ts` pins
- * every one of the nine shapes across all three shipped stores. Deliberately
+ * every one of the eleven shapes across all three shipped stores. Deliberately
  * MODULE-LOCAL rather than exported — a receipt is a CLI projection, not a store
  * fact, and the package-root barrel every exported symbol must reach is outside
  * this row's declared Files globs.
@@ -716,7 +769,7 @@ interface WriteReceipt {
   /** The op as the caller spelled it — the switch's own case label. */
   readonly op: Op;
   /**
-   * The id the write addressed. For the eight issue-scoped ops that is the
+   * The id the write addressed. For the ten issue-scoped ops that is the
    * `<id>` positional; for `goal-assign` it is the MEMBER, because the member is
    * what the join writes to and the goal it was joined to is the sent field.
    */
@@ -739,7 +792,7 @@ function sentFields(fields: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * Print one {@link WriteReceipt} when `--json` was passed, and NOTHING when it
- * was not — so the default stdout of all nine silent writes stays byte-identical
+ * was not — so the default stdout of all eleven silent writes stays byte-identical
  * to what it has always been (empty, exit 0).
  *
  * Every call site sits AFTER its `await store.*(...)` has resolved, which is
@@ -783,6 +836,24 @@ export function stillOpenLine(id: string, prUrl: string): string {
     `close phrase. It stays open until that native close happens, and ` +
     `there is no further close verb to reach for: close it by hand in ` +
     `the tracker.\n`
+  );
+}
+
+/**
+ * The stderr line `block` writes when its cycle walk abstained (ADR-0054
+ * decision 4, ADR-0052): the edge WAS written, and the reader is told exactly
+ * which reads the walk could not make, so "no cycle found" is never implied.
+ */
+function blockAbstentionWarning(
+  id: string,
+  by: string,
+  gaps: readonly BlockerChainGap[],
+): string {
+  const named = gaps.map((g) => `${g.id} (${g.reason})`).join('; ');
+  return (
+    `warning: block ${id} --by ${by}: the cycle check could not decide — ${named}. ` +
+    'The edge was written anyway; a cycle through what could not be read is not ruled out, ' +
+    "and the blocked-by pair check at wave-plan / wave-create will report one if it exists.\n"
   );
 }
 
@@ -839,7 +910,7 @@ export async function runIssueStore(
   // index form found `--config`.
   const positionals = positionalsOf(contract, opArgs);
 
-  // `--json` is router-global (ADR-0051 decision 7) and this group's nine
+  // `--json` is router-global (ADR-0051 decision 7) and this group's eleven
   // `silent-write` ops are where it MEANS something: each prints one receipt of
   // what the engine sent. Read through the SAME contract-aware scan the
   // positionals came from, so a `--question "--json"` prose value can never be
@@ -1007,6 +1078,38 @@ export async function runIssueStore(
           id,
           sentFields({ title: patch.title, sections: patch.sections }),
         );
+        return 0;
+      }
+
+      // ── block / unblock (ADR-0054) — one dependency edge per call ─────────
+      //
+      // The rules live in the stores (the cycle walk, the read-back), so a
+      // non-CLI caller inherits them. This layer inverts `--by` through the
+      // store's own `parseRef` first — an id the store cannot invert is a caller
+      // bug (exit 2), not a store failure — and renders the outcomes: a
+      // `BlockCycleError` or `UnblockResidueError` falls to the outer catch as
+      // exit 1 with its message (the cycle, or the remaining source), and an
+      // abstained cycle walk is a stderr warning on an exit-0 write.
+      case 'block':
+      case 'unblock': {
+        const id = positionals[0];
+        if (id === undefined) return usage(`${op} requires an <id>`, op);
+        const by = flag(args, contract, 'by');
+        if (by === undefined) return usage(`${op} requires --by <blocker-id>`, op);
+        try {
+          store.parseRef(by);
+        } catch (err) {
+          return usage(`${op} --by: ${(err as Error).message}`, op);
+        }
+        if (op === 'block') {
+          const result = await store.block(id, by);
+          if (result.abstained !== undefined) {
+            process.stderr.write(blockAbstentionWarning(id, by, result.abstained));
+          }
+        } else {
+          await store.unblock(id, by);
+        }
+        writeReceipt(wantJson, op, id, { by });
         return 0;
       }
 

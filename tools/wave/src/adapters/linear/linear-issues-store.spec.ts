@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { LinearIssuesStore, DEFAULT_LINEAR_STATES, LinearTransitionVerifyError } from './linear-issues-store';
 import { InMemoryLinearApi, linearConformanceHooks } from './linear-api-fake';
 import type { LinearIssue, LinearStateType } from './linear-api';
-import { GoalMemberJoinError, GoalMemberKindError } from '../issue-store';
+import {
+  BlockCycleError,
+  GoalMemberJoinError,
+  GoalMemberKindError,
+  UnblockResidueError,
+} from '../issue-store';
 import type { CreateInput } from '../issue-store';
 import { parseBody } from '../body-codec';
 import { DEFAULT_TRIAGE_SCHEMA } from '../../contract';
@@ -1561,5 +1566,98 @@ describe('LinearIssuesStore — the Goal is an INITIATIVE whose members are proj
     api.seedProject({ id: uuid, name: 'a UUID-shaped project' });
     await store.assignToGoal(goal, uuid, 'initiative');
     expect((await store.readGoal(goal, 'initiative')).memberIds).toEqual([uuid]);
+  });
+});
+
+// ── block / unblock (ADR-0054) — the native half, against the fake ────────────
+describe('LinearIssuesStore — block / unblock and the native relation (ADR-0054)', () => {
+  let api: InMemoryLinearApi;
+  let store: LinearIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryLinearApi();
+    store = new LinearIssuesStore({ api });
+  });
+
+  it('block writes the `## Blocked by` section AND mirrors a native relation', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ title: 'blocked' }));
+    await store.block(id, blocker);
+    expect(parseBody((await api.getIssue(id)).description).blockedBy).toEqual([
+      store.parseRef(blocker),
+    ]);
+    expect(await api.getBlockedBy(id)).toEqual([blocker]);
+  });
+
+  it('block keeps the body write when the native mirror is refused (best-effort, as create)', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ title: 'blocked' }));
+    api.failRelationWrites(new Error('issueRelationCreate refused'));
+    await expect(store.block(id, blocker)).resolves.toEqual({ added: true });
+    expect(await api.getBlockedBy(id)).toEqual([]);
+    expect((await store.read(id)).blockedBy).toEqual([store.parseRef(blocker)]);
+  });
+
+  it('unblock removes the body ref AND deletes the native relation', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    expect(await api.getBlockedBy(id)).toEqual([blocker]); // create mirrored it
+
+    await expect(store.unblock(id, blocker)).resolves.toEqual({ removed: true });
+
+    expect(await api.getBlockedBy(id)).toEqual([]);
+    expect(parseBody((await api.getIssue(id)).description).blockedBy).toBe('none');
+    expect((await store.read(id)).blockedBy).toBe('none');
+  });
+
+  it('unblock resolves a slug-less body ref through the issue\'s own team before deleting', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(
+      baseInput({ blockedBy: [{ issue: store.parseRef(blocker).issue }] }),
+    );
+    await expect(store.unblock(id, blocker)).resolves.toEqual({ removed: true });
+    expect(await api.getBlockedBy(id)).toEqual([]);
+    expect((await store.read(id)).blockedBy).toBe('none');
+  });
+
+  it('unblock throws, naming the NATIVE EDGE as the remaining source, when the host refuses the delete', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    api.failRelationDeletes(new Error('issueRelationDelete refused'));
+
+    const err = await store.unblock(id, blocker).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnblockResidueError);
+    expect((err as UnblockResidueError).sources).toEqual(['native-edge']);
+    expect((err as Error).message).toMatch(/still comes from the native edge/);
+    expect(parseBody((await api.getIssue(id)).description).blockedBy).toBe('none');
+    expect((await store.read(id)).blockedBy).toEqual([store.parseRef(blocker)]);
+  });
+
+  it('block sees a cycle closed through a hand-drawn NATIVE relation (the chain reads the union)', async () => {
+    const a = await store.create(baseInput({ title: 'A' }));
+    const b = await store.create(baseInput({ title: 'B' }));
+    api.addNativeRelation(b, a); // B blocked by A, natively only
+
+    const err = await store.block(a, b).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlockCycleError);
+    expect((err as BlockCycleError).cycle).toEqual([a, b, a]);
+    expect(parseBody((await api.getIssue(a)).description).blockedBy).toBe('none');
+  });
+
+  it('block abstains — writes, and returns the gap — when a read along the chain fails', async () => {
+    const a = await store.create(baseInput({ title: 'A' }));
+    const b = await store.create(baseInput({ title: 'B' }));
+    const { identifier: c } = await api.createIssue({
+      title: 'C',
+      description: 'prose only',
+      labels: [],
+    });
+    api.addNativeRelation(b, c); // read(C) throws: it carries no Header-Block
+
+    const result = await store.block(a, b);
+
+    expect(result.added).toBe(true);
+    expect(result.abstained?.map((g) => g.id)).toEqual([c]);
+    expect((await store.read(a)).blockedBy).toEqual([store.parseRef(b)]);
   });
 });

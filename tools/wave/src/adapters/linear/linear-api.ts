@@ -283,6 +283,22 @@ export interface LinearApi {
    */
   addBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void>;
   /**
+   * Delete the NATIVE blocked-by relation(s) saying `blockerIdentifier` blocks
+   * `blockedIdentifier` — the relation's first delete path (ADR-0054 decision
+   * 3), reached only by `issue-store unblock`. The {@link addBlockedBy} mirror
+   * itself still never deletes.
+   *
+   * Real impl: read the blocked issue's `inverseRelations` for the relation
+   * ids whose `type` is `blocks` and whose source `issue` is the blocker, then
+   * `issueRelationDelete(id: String!)` → `DeletePayload { success }` for each
+   * (Linear's published GraphQL schema, read 2026-09-26). A relation that is
+   * not there is nothing to delete, and succeeds.
+   *
+   * Throws on an unresolvable identifier or a refused delete. The store records
+   * the throw and lets its read-back decide whether the relation survived.
+   */
+  removeBlockedBy(blockedIdentifier: string, blockerIdentifier: string): Promise<void>;
+  /**
    * Upsert a native attachment card on the issue, keyed by `input.url` (issue
    * #511, mechanics proven consumer-side): a repeated call with the SAME url
    * updates the existing card's `title`/`subtitle` rather than creating a
@@ -350,8 +366,9 @@ export interface LinearApi {
   //
   // Four reads and one write, mirroring the GitHub milestone half. No project
   // CLOSE/archive verb is declared: the facet has no `closeGoal`, so one would
-  // be unreachable surface — the same reasoning that keeps the documented
-  // relation-DELETE off {@link addBlockedBy}'s side of this seam.
+  // be unreachable surface. (The relation delete, {@link removeBlockedBy}, was
+  // kept off this seam for the same reason until `issue-store unblock` gave it
+  // a caller — ADR-0054.)
 
   /**
    * Mint a project under the api's configured TEAM and return its id (the

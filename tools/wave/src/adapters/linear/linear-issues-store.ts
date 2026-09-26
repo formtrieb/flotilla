@@ -47,6 +47,12 @@ import {
   validateAnnotatePatch,
   appendToFilesSection,
   GoalMemberJoinError,
+  checkBlockerChain,
+  BlockCycleError,
+  UnblockResidueError,
+  type BlockResult,
+  type UnblockResult,
+  type BlockedBySource,
   type IssueStore,
   type CreateInput,
   type AnnotatePatch,
@@ -89,6 +95,8 @@ import {
   upsertSection,
   parentToLine,
   assertAcceptanceCriteriaShape,
+  writeBlockedBy,
+  decoratedBlockedBy,
 } from '../body-codec';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
@@ -480,6 +488,76 @@ export class LinearIssuesStore implements IssueStore {
     }
     if (patch.title !== undefined) await this.api.setTitle(id, patch.title);
     if (description !== issue.description) await this.api.setDescription(id, description);
+  }
+
+  // ── block / unblock (ADR-0054 — one dependency edge at a time) ─────────────
+  async block(id: string, by: string): Promise<BlockResult> {
+    const ownSlug = this.parseRef(id).slug;
+    const ref = this.parseRef(by);
+    const issue = await this.api.getIssue(id); // throws on unknown id
+    const codec = decoratedBlockedBy(id, issue.description, 'block');
+    // Already recorded in the authoritative body → the no-op: nothing written,
+    // no walk (an edge that already exists cannot close a new cycle).
+    if (codec.some((r) => refKey(r, ownSlug) === refKey(ref, ownSlug))) return { added: false };
+
+    const chain = await checkBlockerChain({
+      targetId: id,
+      blockerId: by,
+      read: (x) => this.read(x),
+      parseRef: (x) => this.parseRef(x),
+      idForRef: (r, from) => {
+        try {
+          return refToIdentifier(r, this.parseRef(from).slug);
+        } catch {
+          return null;
+        }
+      },
+    });
+    if (chain.kind === 'cycle') throw new BlockCycleError(id, by, chain.cycle);
+
+    await this.api.setDescription(id, writeBlockedBy(issue.description, [...codec, ref]));
+    // The native relation, best-effort and additive — the same mirror create runs.
+    await this.mirrorBlockedBy(id, [ref]);
+    return { added: true, ...(chain.kind === 'abstained' ? { abstained: chain.gaps } : {}) };
+  }
+
+  async unblock(id: string, by: string): Promise<UnblockResult> {
+    const ownSlug = this.parseRef(id).slug;
+    const ref = this.parseRef(by);
+    const key = refKey(ref, ownSlug);
+    const issue = await this.api.getIssue(id); // throws on unknown id
+    const codec = decoratedBlockedBy(id, issue.description, 'unblock');
+    const inBody = codec.some((r) => refKey(r, ownSlug) === key);
+    const nativeHas = async (): Promise<boolean> =>
+      (await this.api.getBlockedBy(id)).some((nid) => refKey(this.parseRef(nid), ownSlug) === key);
+    const inNative = await nativeHas();
+    if (!inBody && !inNative) return { removed: false };
+
+    if (inBody) {
+      const rest = codec.filter((r) => refKey(r, ownSlug) !== key);
+      await this.api.setDescription(id, writeBlockedBy(issue.description, rest));
+    }
+    let deleteError: string | undefined;
+    if (inNative) {
+      try {
+        await this.api.removeBlockedBy(id, refToIdentifier(ref, ownSlug));
+      } catch (err) {
+        deleteError = `the native delete was refused: ${(err as Error).message}`;
+      }
+    }
+
+    // Read back through the SAME union every gate reads (decision 3).
+    const after = await this.read(id);
+    if (after.blockedBy !== 'none' && after.blockedBy.some((r) => refKey(r, ownSlug) === key)) {
+      const sources: BlockedBySource[] = [];
+      const fresh = await this.api.getIssue(id);
+      if (decoratedBlockedBy(id, fresh.description, 'unblock').some((r) => refKey(r, ownSlug) === key)) {
+        sources.push('body');
+      }
+      if (await nativeHas()) sources.push('native-edge');
+      throw new UnblockResidueError(id, by, sources, deleteError);
+    }
+    return { removed: true };
   }
 
   /** Swap the sole `prefix/*` label for `prefix/<value>` (idempotent). */

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { GitHubIssuesStore } from './github-issues-store';
 import { InMemoryGitHubApi, githubConformanceHooks } from './github-api-fake';
 import type { CreateInput, AnnotatePatch } from '../issue-store';
-import { CreateInputError } from '../issue-store';
+import { BlockCycleError, CreateInputError, UnblockResidueError } from '../issue-store';
 import { parseBody } from '../body-codec';
 import {
   runIssueStoreConformance,
@@ -802,5 +802,108 @@ describe('GitHubIssuesStore — the Goal is a milestone (ADR-0044)', () => {
       blockedBy: [blocker],
     });
     expect(await api.getBlockedBy(Number(blocked))).toEqual([Number(blocker)]);
+  });
+});
+
+// ── block / unblock (ADR-0054) — the native half, against the fake ────────────
+describe('GitHubIssuesStore — block / unblock and the native dependency (ADR-0054)', () => {
+  let api: InMemoryGitHubApi;
+  let store: GitHubIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryGitHubApi();
+    store = new GitHubIssuesStore({ api });
+  });
+
+  it('block writes the `## Blocked by` section AND mirrors a native dependency', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ title: 'blocked' }));
+    await store.block(id, blocker);
+    expect(parseBody((await api.getIssue(Number(id))).body).blockedBy).toEqual([
+      { issue: Number(blocker) },
+    ]);
+    expect(await api.getBlockedBy(Number(id))).toEqual([Number(blocker)]);
+  });
+
+  it('block keeps the body write when the native mirror is refused (best-effort, as create)', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ title: 'blocked' }));
+    api.failDependencyWrites(new Error('dependency write refused'));
+    await expect(store.block(id, blocker)).resolves.toEqual({ added: true });
+    expect(await api.getBlockedBy(Number(id))).toEqual([]);
+    expect((await store.read(id)).blockedBy).toEqual([{ issue: Number(blocker) }]);
+  });
+
+  it('unblock removes the body ref AND deletes the native dependency', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    expect(await api.getBlockedBy(Number(id))).toEqual([Number(blocker)]); // create mirrored it
+
+    await expect(store.unblock(id, blocker)).resolves.toEqual({ removed: true });
+
+    expect(await api.getBlockedBy(Number(id))).toEqual([]);
+    expect(parseBody((await api.getIssue(Number(id))).body).blockedBy).toBe('none');
+    expect((await store.read(id)).blockedBy).toBe('none');
+  });
+
+  it('unblock deletes a native-only dependency drawn by hand (nothing in the body)', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput());
+    api.addNativeDependency(Number(id), Number(blocker));
+    const bodyBefore = (await api.getIssue(Number(id))).body;
+
+    await expect(store.unblock(id, blocker)).resolves.toEqual({ removed: true });
+
+    expect(await api.getBlockedBy(Number(id))).toEqual([]);
+    expect((await api.getIssue(Number(id))).body).toBe(bodyBefore);
+  });
+
+  it('unblock throws, naming the NATIVE EDGE as the remaining source, when the host refuses the delete', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const id = await store.create(baseInput({ blockedBy: [store.parseRef(blocker)] }));
+    api.failDependencyDeletes(new Error('delete refused'));
+
+    const err = await store.unblock(id, blocker).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnblockResidueError);
+    expect((err as UnblockResidueError).sources).toEqual(['native-edge']);
+    expect((err as Error).message).toMatch(/still comes from the native edge/);
+    expect((err as Error).message).toMatch(/delete refused/);
+    // the body half DID land — the residue is exactly the native edge
+    expect(parseBody((await api.getIssue(Number(id))).body).blockedBy).toBe('none');
+    expect((await store.read(id)).blockedBy).toEqual([{ issue: Number(blocker) }]);
+  });
+
+  it('block sees a cycle closed through a hand-drawn NATIVE edge (the chain reads the union)', async () => {
+    const a = await store.create(baseInput({ title: 'A' }));
+    const b = await store.create(baseInput({ title: 'B' }));
+    api.addNativeDependency(Number(b), Number(a)); // B blocked by A, natively only
+
+    await expect(store.block(a, b)).rejects.toThrow(BlockCycleError);
+    expect(parseBody((await api.getIssue(Number(a))).body).blockedBy).toBe('none');
+  });
+
+  it('block abstains — writes, and returns the gap — when a read along the chain fails', async () => {
+    const a = await store.create(baseInput({ title: 'A' }));
+    const b = await store.create(baseInput({ title: 'B' }));
+    // C is BARE (no Header-Block), so read(C) throws; B is natively blocked by it.
+    const { number: c } = await api.createIssue({ title: 'C', body: 'prose only', labels: [] });
+    api.addNativeDependency(Number(b), c);
+
+    const result = await store.block(a, b);
+
+    expect(result.added).toBe(true);
+    expect(result.abstained?.map((g) => g.id)).toEqual([String(c)]);
+    expect((await store.read(a)).blockedBy).toEqual([{ issue: Number(b) }]);
+  });
+
+  it('block and unblock refuse a BARE target, writing nothing', async () => {
+    const blocker = await store.create(baseInput({ title: 'blocker' }));
+    const { number } = await api.createIssue({ title: 'bare', body: 'prose only', labels: [] });
+    await expect(store.block(String(number), blocker)).rejects.toThrow(/no readable Header-Block/);
+    await expect(store.unblock(String(number), blocker)).rejects.toThrow(
+      /no readable Header-Block/,
+    );
+    expect((await api.getIssue(number)).body).toBe('prose only');
+    expect(await api.getBlockedBy(number)).toEqual([]);
   });
 });

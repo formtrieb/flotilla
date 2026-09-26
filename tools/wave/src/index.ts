@@ -1321,6 +1321,24 @@ export {
   withTriageDisclaimer,
 } from './adapters/issue-store';
 
+// `block` / `unblock` (ADR-0054) — the post-filing dependency writer the
+// `IssueStore` interface above now carries. Its result shapes ride along for
+// the same reason the interface does (a custom adapter must be able to NAME
+// what it returns), and the two typed failures for the `instanceof`-across-
+// the-barrel reason every error in this file does: a root-only consumer can
+// RECEIVE `BlockCycleError` (the cycle, on `.cycle`) from `block()` and
+// `UnblockResidueError` (the remaining source, on `.sources`) from `unblock()`.
+// The cycle walk itself (`checkBlockerChain`) stays module-local — every
+// `block()` already runs it, the `classifyCreateInput` stance above.
+export {
+  type BlockResult,
+  type UnblockResult,
+  type BlockedBySource,
+  type BlockerChainGap,
+  BlockCycleError,
+  UnblockResidueError,
+} from './adapters/issue-store';
+
 // The GOAL FACET (ADR-0044) — the finish line, bound to a native container.
 //
 // Shipped whole, for the reason the `IssueStore` block above states: a
