@@ -6,22 +6,26 @@ Moved out of `reference/convention-13-one-bash-call-per-step.md` per ADR-0034's 
 
 **2026-09-16 (#810, ADR-0050's corpus wave, round 3):** the remaining *why* prose moved out of `reference/` too — the two mechanism derivations (Mechanism A's documented compound-command rule and hazard cases; Mechanism B's guard description and its first live occurrence), the "Splitting is not always a preceding `cd`" walkthrough's three reproductions and the Scribe's retired `cd`/engine-call split, the "Why widening the permission allowlist is the wrong fix" section's four reasons, the "The two signatures are not interchangeable" walkthrough, and — since #810 lands on top of the round-2 declaration row — each catalog entry's remaining minimal code pair plus scoped-claim paragraph (entries 1, 2, 3 and 5; entry 4 was prose-only and had no code pair to move). Each is appended below, under the mechanism section it belongs to or the Entry N heading it was drawn from. `reference/` now keeps, for these: one residual sentence per mechanism, one line per catalog entry, and a pointer to this file for each — plus the rule sentence, the Enforced-by line, the catalog's shape names, the Common Mistakes list, and the code example under "Splitting is not always a preceding `cd`" (the ✗ fused / ✗ split-but-wrong / ✓ flag-carrying trio and the closing "most tools have such a flag" paragraph), which stayed because they are the rule's own shape, not its derivation.
 
+### Labelling shape for new occurrences (Operator ruling, 2026-09-25)
+
+Going forward, a newly-appended occurrence in this file states three things explicitly rather than leaving them to a reader's inference: **Observed** (what the row's own report actually shows, verbatim or closely paraphrased), **Inferred** (a reading that goes beyond the observation, named as inference so it can be weighed separately), and **Not established** (what the occurrence does *not* settle, so a later reader does not over-read it). Several entries below already use this shape ad hoc — Entry 4's occurrences 2 through 4, the reset-refused entry, the classifier-refusal null-result measurement — and it is now the standing shape for anything appended here. **This labelling is for new occurrences only: no backfill of the entries that predate it.**
+
 ### Mechanism A — the permission allowlist, in full
 
 **Failure signature: the harness raises a permission dialog mid-dispatch.** In an AFK wave there is no human at the keyboard, so the agent sits on a prompt that never gets answered and the row stalls — the retrospective finding that permission prompts are the ceiling on AFK dispatch is exactly this, and a fused command is the cheapest way to hit it.
 
 A Worker/Reviewer worktree carries **tracked files only**, so the tracked `.claude/settings.json` `permissions.allow` list is the *only* permission source a dispatched agent inherits (wave-setup scaffolds it deliberately for that reason). Its entries are command patterns matched against the command text — `Bash(npm ci)`, `Bash(npx vitest run:*)`, `Bash(git fetch origin:*)`.
 
-The authoritative documented form for how those patterns meet a compound command — Claude Code's own "Configure permissions" reference, §Bash → *Compound commands*, read at the source in this convention's dispatch rather than recalled:
+The authoritative documented form for how those patterns meet a compound command — Claude Code's own **"Configure permissions"** reference, **`https://code.claude.com/docs/en/permissions`**, § *Tool-specific permission rules → Bash → Compound commands* (the two `cd`-hazard bullets below sit one subsection over, under § *… → Bash → Read-only commands*) — **read fresh at this row's own dispatch, 2026-09-26, against Claude Code CLI v2.1.280**, rather than recalled or copied from an earlier citation:
 
 > Claude Code is aware of shell operators, so a rule like `Bash(safe-cmd *)` won't give it permission to run the command `safe-cmd && other-cmd`. The recognized command separators are `&&`, `||`, `;`, `|`, `|&`, `&`, and newlines. A rule must match each subcommand independently.
 
-So the gate a fused command faces is **strictly narrower** than the gate its allowlisted half faces alone: *every* subcommand must qualify on its own merits, and the allowlisted half carries only itself past the gate — never whatever is glued in front of it. The same reference names two `cd` combinations that prompt **even when each part is independently read-only**:
+So the gate a fused command faces is **strictly narrower** than the gate its allowlisted half faces alone: *every* subcommand must qualify on its own merits, and the allowlisted half carries only itself past the gate — never whatever is glued in front of it. The same page names two `cd` combinations that prompt **even when each part is independently read-only**:
 
-> * **`cd` with `git`**: prompts when the `cd` changes into a different directory, since running `git` in a new directory can execute that directory's hooks. […]
-> * **`cd` with an output redirect**: prompts when Claude Code can't determine which directory the redirect target resolves against after the `cd` runs.
+> * **`cd` with `git`**: prompts when the `cd` changes into a different directory, since running `git` in a new directory can execute that directory's hooks. A `cd` whose target resolves to the current working directory is a no-op and doesn't trigger the prompt.
+> * **`cd` with a redirect**: prompts when Claude Code can't determine which directory the redirect target resolves against after the `cd` runs. A command whose only redirect target is `/dev/null`, such as `cd app; grep -r pattern . 2>/dev/null`, doesn't prompt, because `/dev/null` doesn't depend on the working directory.
 
-Those two are not exotic: `cd <dir> && git …` is the shape of half the workspace-setup steps in this pipeline, and `cd <dir> && <cmd> > <file>` is how an agent captures output it means to read back. The first prompts whenever the `cd` actually changes directory; the second prompts whenever the harness cannot resolve where the redirect target lands (`2>/dev/null` is the documented exception, since `/dev/null` does not depend on the working directory). Neither is rescued by anything on the allowlist.
+Those two are not exotic: `cd <dir> && git …` is the shape of half the workspace-setup steps in this pipeline, and `cd <dir> && <cmd> > <file>` is how an agent captures output it means to read back. The first prompts whenever the `cd` actually changes directory; the second prompts whenever the harness cannot resolve where the redirect target lands (`2>/dev/null` is the documented exception, since `/dev/null` does not depend on the working directory — the vendor page's own example, quoted above). Neither is rescued by anything on the allowlist.
 
 **A correction the next reader needs, because the old framing is still greppable.** This clause used to live only inside `scribeBrief()`, phrased as *"a compound command that STARTS WITH `cd` matches no allowlist prefix … changes the command's first token to `cd`, so the rule never fires."* Right instruction, wrong mechanism — and the wrong mechanism mispredicts in **both** directions:
 
@@ -537,7 +541,8 @@ is left exactly as it stands: one probe, in a non-guard position, against a vari
 unset, is not grounds to relax a rule that three stations of Entry 1's own arc established — and the
 harness message re-wording noted above is a reminder that this guard's behaviour drifts between
 versions. **A follow-up that re-runs Entry 1's five stations against the current harness is what would
-settle it.** Until then, keep following Entry 1.
+settle it.** Until then, keep following Entry 1. (2026-09-22 update: that follow-up ran — see
+*Entry 1, re-measured 2026-09-22* above, which is what this note asked for.)
 
 **Occurrence:** wave `2026-09-16-engine-truth-and-verbs`, spine disclosures `772.4` and row 755
 iteration 1, carved out of issue #800 at triage on 2026-09-21 and re-reproduced at issue #869's own
