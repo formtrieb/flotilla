@@ -979,6 +979,17 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     flags: [],
     positionals: { kind: 'fixed', count: 2, labels: ['<issue-path>', '<sha-range>'] },
     output: 'prose',
+    // ADR-0055 decision 5: state the fact plainly, keep the verb running
+    // unchanged, and never write the one removal-vocabulary word ADR-0051
+    // decision 8 forbids everywhere in this engine — a plain statement of
+    // fact carries the same information without promising a removal nobody
+    // has dated.
+    notes: [
+      '  No skill, agent definition, or driver calls this verb — the Reviewer',
+      '  runs its own diff-against-declared-Files check instead. It is a',
+      '  removal candidate for a later major, which is not currently planned,',
+      '  and it keeps working unchanged until then (ADR-0055 decision 5).',
+    ],
     outputNote: 'text, with a JSON block embedded at the end',
     json: { lead: 'ONLY that block', shape: FILES_DRIFT_JSON_SHAPE },
   }),

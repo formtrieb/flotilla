@@ -1184,6 +1184,12 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // completed): the four touched skill files add 1,152 B, re-measured at 1,272,328 B over the same 57
 // files (next full KB 1,273,000 < this value) — 3,672 B of headroom left. Shared standing load
 // untouched (160,956 B — none of this row's edits touch `wave-shared/`).
+// NOT raised by issue #1007 (the required-Files-siblings rule, beside to-issues' existing
+// co-located-spec rule, ADR-0055 decision 7 — the sibling row's files-drift removal-candidate
+// note lives in cli.ts and docs/CAPABILITIES.md, neither a member of this population): the one
+// touched skill file, to-issues/SKILL.md, adds 515 B, re-measured at 1,272,843 B over the same 57
+// files (next full KB 1,273,000 < this value) — 3,157 B of headroom left. Shared standing load
+// untouched (160,956 B — none of this row's edits touch `wave-shared/`).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

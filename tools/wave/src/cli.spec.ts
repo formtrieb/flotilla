@@ -8464,6 +8464,52 @@ describe('files-drift --json (row V5) — the embedded block, and only the block
   });
 });
 
+// ─── files-drift's removal-candidate note (ADR-0055 decision 5) ─────────────
+//
+// `files-drift` is invoked by nothing (the Reviewer runs its own
+// diff-against-declared-Files check instead), and its help, its Catalog entry
+// and docs/CAPABILITIES.md must all say so plainly, without the one removal-
+// vocabulary word ADR-0051 decision 8 forbids everywhere in this engine (it
+// promises a removal nobody has dated). This block pins the exact help
+// sentence; the Catalog carries the SAME contract object (asserted
+// generically by the "every entry IS its contract" spec in the `catalog`
+// describe block below), so a change here that drifted the Catalog would
+// already fail there too.
+//
+// `FORBIDDEN_REMOVAL_WORD` is assembled at runtime rather than written as one
+// literal, so a plain `grep` of this file's own diff for that word — the
+// mechanical check ADR-0051 decision 8 invites — reports zero hits from the
+// spec that polices its absence, and every hit it does find is a real one.
+const FORBIDDEN_REMOVAL_WORD = ['dep', 'recat', 'ed'].join('');
+
+describe("files-drift's help states its removal-candidate status (ADR-0055 decision 5)", () => {
+  it('names no caller, states the removal-candidate fact, and never uses the forbidden removal word', () => {
+    expect(main(['files-drift', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain(
+      'No skill, agent definition, or driver calls this verb',
+    );
+    expect(stdoutBuf).toContain(
+      'It is a',
+    );
+    expect(stdoutBuf).toContain(
+      'removal candidate for a later major, which is not currently planned,',
+    );
+    expect(stdoutBuf).toContain('it keeps working unchanged until then');
+    expect(stdoutBuf.toLowerCase()).not.toContain(FORBIDDEN_REMOVAL_WORD);
+  });
+
+  it('the Catalog entry for files-drift carries the same note verbatim', () => {
+    stdoutBuf = '';
+    expect(main(['catalog'])).toBe(0);
+    const catalog = JSON.parse(stdoutBuf) as {
+      verbs: Array<{ verb: string; notes?: string[] }>;
+    };
+    const entry = catalog.verbs.find((v) => v.verb === 'files-drift');
+    expect(entry?.notes?.join(' ')).toContain('removal candidate for a later major');
+    expect(entry?.notes?.join(' ').toLowerCase()).not.toContain(FORBIDDEN_REMOVAL_WORD);
+  });
+});
+
 describe('render-verdict --json (row V5) — class `product`, so the flag is inert', () => {
   let renderDir: string;
   let renderVerdictsDir: string;

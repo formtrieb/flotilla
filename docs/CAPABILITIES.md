@@ -61,6 +61,14 @@ PRs — exactly the Bitbucket line above, reached by a different road. Merge Que
 the same availability line and flotilla does not use it either way (a paid dependency on
 private repos, rejected as the standard path in [ADR-0023](adr/0023-landing-is-partial-arm-through-the-engine-host-seam.md)'s Considered Options).
 
+## Engine verbs
+
+- **`files-drift`** computes the same same-project-vs-cross-project file check the
+  Reviewer's own diff-against-declared-Files check already runs at review time, but no
+  skill, agent definition, or driver calls it — it is a removal candidate for a later
+  major, which is not currently planned, and it keeps working unchanged until then
+  ([ADR-0055](adr/0055-what-lands-is-the-reviewed-commit.md) decision 5).
+
 ## Boundaries
 
 - **Bitbucket Data Center is deliberately not a column.** It is a different product with
