@@ -76,6 +76,8 @@ If a slice is HITL and the mode is unsignalled, prompt: `foreground` (you co-pil
 
 > **Co-located spec.** If a listed source file adds new testable behavior (new function, subcommand, exported symbol), list its co-located test in the same Files list (`foo.ts` → `foo.spec.ts`). This is what keeps the conflict-map honest and lets the AC-coverage gate pass.
 
+> **Required Files siblings.** Two more slicing rules, keyed to *what kind of surface* the slice touches rather than to new testable behavior: a slice that adds a root export declares the barrel trio — `index.ts`, `index.spec.ts`, `barrel-drift.spec.ts`; a slice that adds or changes a CLI surface declares `cli.spec.ts` ([ADR-0055](../../../docs/adr/0055-what-lands-is-the-reviewed-commit.md) decision 7). This is a slicing rule, not a readiness gate — nothing at `dor` checks it, so get the list right here.
+
 **Blocked by** (required) — mirror the dependency chain from step 3. Resolved to real ids at publish time (the two-pass — see reference).
 
 **Parent** (set it when slicing a PRD) — the source PRD's **opaque id string**, exactly as `publishDocument` / the `to-prd` handoff printed it (e.g. `"412"` on GitHub, `"<slug>#prd"` on markdown). It is **not** an `IssueRef` — `parent` references a *document's identity*, so you pass the raw id verbatim; **no `parse-ref`, no `{slug, issue}` construction** (that is only for `blockedBy`). This marks the PRD **consumed** and, on GitHub, renders the forward cross-reference for free. Set it in **both** modes — create *and* decorate (a PRD is often realized through a mix of new slices and already-filed issues you decorate). Omit it when the slices have no PRD source.
