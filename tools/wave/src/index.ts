@@ -730,11 +730,12 @@ export {
 } from './worktree-cleanup';
 
 // The REVIEW-REF sweep (issue #732) — the module's fifth population and the
-// first that is not a path: the `refs/review/<id>`, `refs/review/sib/<id>` and
-// `refs/sib/<id>` refs a Reviewer fetches a branch tip into, which outlive the
-// worktree, the local branch and the remote branch alike and which no pass in
-// this module previously reached. 187 of them had accumulated in one shared
-// `.git` before a human swept them by hand with `git update-ref -d`.
+// first that is not a path: the `refs/review/<id>`, `refs/review/sib/<id>`,
+// `refs/review/base/<id>` and `refs/sib/<id>` refs a Reviewer fetches a branch
+// tip into, which outlive the worktree, the local branch and the remote
+// branch alike and which no pass in this module previously reached. 187 of
+// them had accumulated in one shared `.git` before a human swept them by hand
+// with `git update-ref -d`.
 //
 // Shipped WHOLE, the same rule the four sweeps above ship by — list
 // (`listReviewRefs`), plan (`planReviewRefSweep`), execute
@@ -835,9 +836,11 @@ export {
 // probe checkout must live outside the repository, so the stamp
 // `flotilla-probe-<wave-slug>-<row-id>-i<iteration>` stands in for a root, and
 // a probe is removable unless its own row reads a running state (`dispatched`,
-// `re-dispatched`, `reviewing`) at the stamp's own iteration (ADR-0042
-// Correction 2026-09-25). `StampedProbeSpine` therefore carries each row's
-// `Iter` as well as its `State` — `rowIters`, a required member (issue #974).
+// `re-dispatched`, `reviewing`, `report-in`, `verdict-in` — the last two added
+// by issue #991, the states a resume reconstructs) at the stamp's own
+// iteration (ADR-0042 Correction 2026-09-25). `StampedProbeSpine` therefore
+// carries each row's `Iter` as well as its `State` — `rowIters`, a required
+// member (issue #974).
 //
 // Shipped WHOLE by the rule every sweep here ships by — list, plan, the
 // one-shot — plus `STAMPED_PROBE_PREFIX`, the stamp's fixed head, for the

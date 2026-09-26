@@ -944,6 +944,21 @@ git -C "$REPO" rev-parse origin/<default-branch>
 #    refs/review/<id> / refs/review/base/<id> stay untouched — spared until
 #    the whole wave is terminal, swept at wave-close phase 3, not here
 {{wave-cli}} worktree-cleanup --branches "wave/$ID-$ROW_SLUG"
+#    Read THIS call's own exit code, never through a pipeline (7c's rule,
+#    verbatim) — a non-zero worktree-cleanup hides behind a zero `tee`.
+#    Exit 1 with the worktree under `erroredStillListed` is the harness
+#    write-deny shape ([wave-close phase 3](../../wave-close/reference/phase-3-worktree-cleanup.md)
+#    is the reading guide for that shape, not restated here): the
+#    registration still stands, and this row's branch is not yet
+#    sweepable. A `--branches` call never deletes the BRANCH itself —
+#    only `--orphans` does, once the branch is no longer checked out in
+#    any live worktree — so once this call reports the worktree actually
+#    gone (`git worktree list` no longer shows it), run the follow-up
+#    that reaps the now-unblocked branch:
+{{wave-cli}} worktree-cleanup --orphans --branches "wave/$ID-$ROW_SLUG"
+#    Read `branchesDeleted` for the confirmation; `branchHygieneSkipped`
+#    (`branch-probe-failed`) or `branchHygieneDeferred` (still checked out
+#    somewhere) name why it did not go if it is not there yet.
 # 6. re-anchor — the round anchor, re-derived fresh, never carried over
 ANCHOR_SHA=$(git -C "$REPO" rev-parse HEAD)
 # 7. re-run step 3's DOR + Conflict-Map against $ANCHOR_SHA for the next round's rows

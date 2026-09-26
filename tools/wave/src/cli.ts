@@ -180,7 +180,9 @@
  *                    verbatim (locked, live-branch, orphan-with-real-files,
  *                    dirty); a probe that passes them is skipped `live-row`
  *                    while the --spine spine shows its row in a running state
- *                    (dispatched, re-dispatched, reviewing) at the stamp's own
+ *                    (dispatched, re-dispatched, reviewing, report-in,
+ *                    verdict-in — the last two added by issue #991, the
+ *                    states a resume reconstructs) at the stamp's own
  *                    iteration — or shows an Iter cell that is not a number,
  *                    which fails closed — and is removed otherwise (issue
  *                    #974: the spine never records `reviewing`, so the state
@@ -1050,10 +1052,10 @@ const ROUTER_VERB_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       '  worktrees root (the E2BIG population); --dry-run previews the same plan.',
       '  Every run also sweeps stamped Reviewer probe checkouts (flotilla-probe-*),',
       '  wherever they sit, under probes: spared live-row while the --spine row is',
-      '  dispatched, re-dispatched or reviewing at the stamp\'s own iteration (or',
-      '  its Iter is not a number), removed otherwise; with no --spine nothing is',
-      '  removed. --probes-only runs that population alone (never with --orphans,',
-      '  --detached or --branches).',
+      '  dispatched, re-dispatched, reviewing, report-in or verdict-in at the',
+      '  stamp\'s own iteration (or its Iter is not a number), removed otherwise;',
+      '  with no --spine nothing is removed. --probes-only runs that population',
+      '  alone (never with --orphans, --detached or --branches).',
     ],
     // It used to say `# prints JSON` inline on the signature line and carry no
     // `output:` line at all — the one JSON verb in the engine that advertised
@@ -2733,9 +2735,10 @@ const UNDECLARED_WAVE_SCOPE: LiveWaveScope = {
  * no flag: stamped Reviewer probe checkouts, wherever they sit — the plan on
  * `--dry-run`, the executed `CleanupResult` on the run — removed unless the
  * `--spine` spine shows the probe's row running (`dispatched`, `re-dispatched`,
- * `reviewing`) at the stamp's own iteration or an `Iter` cell it cannot compare
- * (ADR-0042 Correction 2026-09-25, issue #974), and otherwise named with a
- * skip reason. No flag because the close's ordinary
+ * `reviewing`, `report-in`, `verdict-in` — the last two added by issue #991,
+ * the states a resume reconstructs) at the stamp's own iteration or an `Iter`
+ * cell it cannot compare (ADR-0042 Correction 2026-09-25, issue #974), and
+ * otherwise named with a skip reason. No flag because the close's ordinary
  * call must reach it (decision 14: the close collects what routing missed),
  * and because it fails closed without a spine. `--probes-only` is the one
  * narrowing: the Coordinator's routing-step call, handled by
