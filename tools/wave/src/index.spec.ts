@@ -194,7 +194,14 @@ import {
   // one comparison rule.
   HeadMismatchError as HeadMismatchErrorFromRoot,
   headsMatch as headsMatchFromRoot,
+  // ADR-0020 amendment 2026-09-25 — the team's PR-automation rule type, and the
+  // seam whose OPTIONAL read method returns it. Type-only; `tsc --noEmit` on the
+  // annotations in the store-preflight block is the assertion.
+  type LinearGitAutomationState as LinearGitAutomationStateFromRoot,
+  type LinearApi as LinearApiFromRoot,
+  LinearIssuesStore as LinearIssuesStoreFromRoot,
 } from './index';
+import { InMemoryLinearApi } from './adapters/linear/linear-api-fake';
 import { DEFAULT_COMMIT_MESSAGE_SOURCE, HeadMismatchError, headsMatch } from './host-pr';
 
 /** Write a package manifest to a fresh tmp dir and hand back its path. */
@@ -438,6 +445,36 @@ describe('the store-preflight family is reachable from the PACKAGE ROOT (issue #
     };
     expect(label('state-catalog')).toBe('workflow states');
     expect(label('engine-version')).toBe('plugin/engine lockstep');
+  });
+
+  it('re-exports the PR-automation rule type, and the gitAutomation reading rides the root report type', async () => {
+    // Compile-time half. The first annotation resolves only if the barrel
+    // re-exports the rule type; the second typechecks only while the seam's
+    // read method stays OPTIONAL — a required one would demand it here, which
+    // is exactly the implementer break this slice promises not to make.
+    const rule: LinearGitAutomationStateFromRoot = {
+      event: 'review',
+      stateName: 'In Review',
+      targetBranch: null,
+    };
+    const withoutTheRead: Pick<LinearApiFromRoot, 'listGitAutomationStates'> = {};
+    expect(withoutTheRead.listGitAutomationStates).toBeUndefined();
+
+    const api = new InMemoryLinearApi();
+    api.setGitAutomationStates([rule]);
+    const report: StorePreflightReportFromRoot = await preflightStoreFromRoot(
+      { store: { kind: 'linear', team: 'EX' } },
+      new LinearIssuesStoreFromRoot({ api }),
+    );
+    const reading: NonNullable<StorePreflightReportFromRoot['gitAutomation']> | undefined =
+      report.gitAutomation;
+    expect(reading?.rules).toEqual([rule]);
+    // Advisory at the root too: draft/start/mergeable carry no rule, so the
+    // reading abstains — and `ok` is still the checks' own answer.
+    expect(reading?.status).toBe('abstain');
+    expect(report.ok).toBe(true);
+    // The closed check-name union is untouched: the reading is a FIELD.
+    expect(report.checks.map((c) => c.name)).toEqual(['tracker-host-integration', 'state-catalog']);
   });
 });
 

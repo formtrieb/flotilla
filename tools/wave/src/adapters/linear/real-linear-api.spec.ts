@@ -922,6 +922,100 @@ describe('RealLinearApi', () => {
     });
   });
 
+  // ── the team's PR-automation rules (ADR-0020 amendment 2026-09-25) ─────────
+  //
+  // UNEXECUTABLE CORE PATH (ADR-0030): no Linear credential in the dispatch that
+  // wrote these. The wire shape is pinned against Linear's published schema
+  // (`linear/linear` → `packages/sdk/src/schema.graphql` @ `689ccc1e`, read
+  // 2026-09-26): `team(id: String!): Team!`, `Team.gitAutomationStates(first,
+  // after, …): GitAutomationStateConnection!`, `GitAutomationState { event:
+  // GitAutomationStates!, state: WorkflowState, targetBranch:
+  // GitAutomationTargetBranch }`, `GitAutomationTargetBranch { branchPattern:
+  // String!, isRegex: Boolean! }`.
+
+  describe('listGitAutomationStates (store-preflight gitAutomation reading)', () => {
+    function automationPage(
+      nodes: Record<string, unknown>[],
+      pageInfo: { hasNextPage: boolean; endCursor?: string | null } = { hasNextPage: false, endCursor: null },
+    ): LinearHttpResponse {
+      return { status: 200, json: { data: { team: { gitAutomationStates: { nodes, pageInfo } } } } };
+    }
+
+    it('reads through the CACHED team id and maps event, target state name and target branch', async () => {
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse({ id: 'team-uuid-7' }),
+        TeamGitAutomationStates: () =>
+          automationPage([
+            { event: 'start', state: { name: 'In Progress' }, targetBranch: null },
+            { event: 'draft', state: null, targetBranch: null },
+            { event: 'review', state: { name: 'In Review' }, targetBranch: { branchPattern: 'release/.*', isRegex: true } },
+          ]),
+      });
+
+      const rules = await api.listGitAutomationStates();
+
+      expect(rules).toEqual([
+        { event: 'start', stateName: 'In Progress', targetBranch: null },
+        // A null state is "no action" and stays null — never coalesced.
+        { event: 'draft', stateName: null, targetBranch: null },
+        { event: 'review', stateName: 'In Review', targetBranch: { branchPattern: 'release/.*', isRegex: true } },
+      ]);
+      const req = http.requests.find((r) => r.query.includes('TeamGitAutomationStates'));
+      expect(req?.variables).toMatchObject({ teamId: 'team-uuid-7', first: 100 });
+      expect(req?.query).toContain('gitAutomationStates(first: $first, after: $after)');
+      expect(req?.query).toContain('targetBranch { branchPattern isRegex }');
+      // The team is resolved ONCE and reused: a second read costs no second catalog round-trip.
+      await api.listGitAutomationStates();
+      expect(http.requests.filter((r) => r.query.includes('ResolveTeamCatalog'))).toHaveLength(1);
+    });
+
+    it('pages to cursor exhaustion — no bound on the rule count', async () => {
+      const { api, http } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        TeamGitAutomationStates: (req) =>
+          (req.variables as Record<string, unknown>).after === 'cursor-1'
+            ? automationPage([{ event: 'merge', state: { name: 'Done' }, targetBranch: null }])
+            : automationPage([{ event: 'start', state: { name: 'In Progress' }, targetBranch: null }], {
+                hasNextPage: true,
+                endCursor: 'cursor-1',
+              }),
+      });
+
+      const rules = await api.listGitAutomationStates();
+
+      expect(rules.map((r) => r.event)).toEqual(['start', 'merge']);
+      const pages = http.requests.filter((r) => r.query.includes('TeamGitAutomationStates'));
+      expect(pages).toHaveLength(2);
+      expect((pages[1].variables as Record<string, unknown>).after).toBe('cursor-1');
+    });
+
+    it('a present-but-malformed target branch still reads BRANCH-SCOPED, and an event-less node is dropped', async () => {
+      const { api } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        TeamGitAutomationStates: () =>
+          automationPage([
+            { event: 'review', state: { name: 'Todo' }, targetBranch: { isRegex: false } },
+            { state: { name: 'In Review' }, targetBranch: null },
+          ]),
+      });
+
+      const rules = await api.listGitAutomationStates();
+
+      expect(rules).toEqual([
+        { event: 'review', stateName: 'Todo', targetBranch: { branchPattern: '', isRegex: false } },
+      ]);
+    });
+
+    it('a GraphQL error surfaces as a typed LinearApiError (the preflight turns it into an abstaining reading)', async () => {
+      const { api } = makeApi({
+        ResolveTeamCatalog: () => teamCatalogResponse(),
+        TeamGitAutomationStates: () => ({ status: 200, json: { errors: [{ message: 'Cannot query field "gitAutomationStates"' }] } }),
+      });
+
+      await expect(api.listGitAutomationStates()).rejects.toBeInstanceOf(LinearApiError);
+    });
+  });
+
   // ── the Goal facet's project substrate (ADR-0044) ─────────────────────────
   //
   // UNEXECUTABLE CORE PATH (ADR-0030): no live Linear credential is available to
