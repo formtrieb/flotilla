@@ -46,6 +46,21 @@ const SKILL_MD = join(
   '../../../.claude/skills/wave-shared/SKILL.md',
 );
 
+/**
+ * Where the two agent-boundary schema literals — the ones `SKILL_MD` above
+ * used to carry at their fence anchors — actually live as of issue #818.
+ * `compose-driver` has filled both into the shipped driver script from the
+ * engine asset since issue #680, so `SKILL_MD` no longer needs the full
+ * literal-plus-notes on every wave's standing read; `SKILL_MD` keeps a short
+ * pointer to this file instead. Every extraction below that pins the
+ * WAVE-SHARED COPY (as opposed to the driver's own copy, which still lives in
+ * `WORKFLOW_DRIVER_JS`) reads this file now.
+ */
+const WAVE_SHARED_RESULT_SCHEMAS_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-shared/evidence/result-schemas.md',
+);
+
 const WORKFLOW_DRIVER_MD = join(
   __dirname,
   '../../../.claude/skills/wave-start/reference/workflow-driver.md',
@@ -204,7 +219,10 @@ function assertBoundarySafe(schema: unknown, label: string): void {
 }
 
 describe('skill-schema-drift — wave-shared inlined literals pin the engine consts', () => {
-  const md = readFileSync(SKILL_MD, 'utf-8');
+  // Issue #818: the two literals moved out of SKILL_MD's own fence anchors into
+  // wave-shared/evidence/result-schemas.md (a short pointer took their place in
+  // SKILL_MD). This describe block pins the literals wherever they now live.
+  const md = readFileSync(WAVE_SHARED_RESULT_SCHEMAS_MD, 'utf-8');
 
   it('WORKER_REPORT_SCHEMA inlined literal deep-equals WORKER_REPORT_JSON_SCHEMA', () => {
     const inlined = extractInlinedSchema(
@@ -268,6 +286,17 @@ describe('skill-schema-drift — wave-shared inlined literals pin the engine con
         'WORKER_REPORT_SCHEMA',
       ),
     ).toThrow(/extraction anchor missing/);
+  });
+
+  it('PREMISE — wave-shared/SKILL.md no longer carries either literal opener (issue #818)', () => {
+    // The move this describe block's repoint depends on: if a literal ever
+    // returned to SKILL_MD, this pin's deep-equal above would keep passing
+    // against the WRONG copy (whichever one changed last) without this premise
+    // check ever noticing a duplicate had appeared.
+    const skillMd = readFileSync(SKILL_MD, 'utf-8');
+    expect(skillMd).not.toContain('const WORKER_REPORT_SCHEMA = {');
+    expect(skillMd).not.toContain('const REVIEWER_VERDICT_SCHEMA = {');
+    expect(skillMd).toContain('evidence/result-schemas.md');
   });
 });
 
@@ -423,7 +452,10 @@ type ReviewerVerdictSchemaShape = {
 };
 
 describe('skill-schema-drift — documentedFormComparison rides BOTH verdict copies (ADR-0030)', () => {
-  const sharedMd = readFileSync(SKILL_MD, 'utf-8');
+  // Issue #818: the wave-shared copy moved out of SKILL_MD's fence anchor into
+  // wave-shared/evidence/result-schemas.md; this block's "shared" half now
+  // reads that file, alongside the driver's own copy which is unmoved.
+  const sharedMd = readFileSync(WAVE_SHARED_RESULT_SCHEMAS_MD, 'utf-8');
   const driverJs = readFileSync(WORKFLOW_DRIVER_JS, 'utf-8');
 
   function sharedVerdictSchema(md: string): ReviewerVerdictSchemaShape {
@@ -467,13 +499,13 @@ describe('skill-schema-drift — documentedFormComparison rides BOTH verdict cop
 
   /** Both verdict-schema copies, loaded lazily so a failure names its file. */
   const BOTH_COPIES: Array<[string, () => ReviewerVerdictSchemaShape]> = [
-    ['wave-shared/SKILL.md', () => sharedVerdictSchema(sharedMd)],
+    ['wave-shared/evidence/result-schemas.md', () => sharedVerdictSchema(sharedMd)],
     ['driver/wave-start-inflight.js', () => driverVerdictSchema(driverJs)],
   ];
 
   /** The same two copies as raw source + extraction anchor, for the regressions. */
   const BOTH_SOURCES: Array<[string, string, string]> = [
-    ['wave-shared/SKILL.md', sharedMd, WAVE_SHARED_REVIEWER_VERDICT_ANCHOR],
+    ['wave-shared/evidence/result-schemas.md', sharedMd, WAVE_SHARED_REVIEWER_VERDICT_ANCHOR],
     ['driver/wave-start-inflight.js', driverJs, DRIVER_REVIEWER_VERDICT_ANCHOR],
   ];
 
