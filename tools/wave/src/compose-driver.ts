@@ -6,7 +6,7 @@
  *
  * The dispatch script used to live as a fenced code block inside the wave-start
  * skill's `workflow-driver.md` reference document. Every wave, a Coordinator
- * extracted that fence, filled five compose-time constants and a per-row
+ * extracted that fence, filled the compose-time constants and a per-row
  * `ISSUES` array into the copy by hand, and dispatched the result. That copy is
  * a COPY, so the document grew a compose-fresh-or-verify rule and a seeded
  * currency checklist to police it — and it drifted anyway: the fence named the

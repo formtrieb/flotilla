@@ -4,7 +4,7 @@ The single dispatch mechanism (ADR-0016: no dual prose-vs-driver selector, no ex
 
 > ## Where the script lives — it is not in this document any more
 >
-> **The dispatch script ships as an engine package asset: `tools/wave/driver/wave-start-inflight.js`.** It used to be a fenced code block here, extracted and hand-filled at every dispatch; the engine's `compose-driver` verb fills it now (see [Composing the driver](#composing-the-driver--one-verb-no-transcription) below). Every symbol this document reasons about lives in that one file, under the same names — the two `*_SCHEMA` literals and `SCRIBE_RESULT_SCHEMA`, the compose-time constants `REPO_ROOT` / `WAVE_CLI` / `REPORTS_DIR` / `VERDICTS_DIR` / `REVIEWER_AGENT`, the `ISSUES` row template and its branch derivation, `REQUIRED_ROW_FIELDS` / `isMissingField` / `assertRequiredRowFields`, `HUMAN_GATED_WORKERS` / `assertNotHumanGated`, `workerBrief()` / `reviewerBrief()` / `scribeBrief()`, the Scribe stage wrapper, and the `pipeline()` fan-out. A citation anywhere that names one of those symbols "in `workflow-driver.md`" resolves through this one hop: the reasoning is here, the code is there.
+> **The dispatch script ships as an engine package asset: `tools/wave/driver/wave-start-inflight.js`.** It used to be a fenced code block here, extracted and hand-filled at every dispatch; the engine's `compose-driver` verb fills it now (see [Composing the driver](#composing-the-driver--one-verb-no-transcription) below). Every symbol this document reasons about lives in that one file, under the same names — the two `*_SCHEMA` literals and `SCRIBE_RESULT_SCHEMA`, the compose-time constants `REPO_ROOT` / `WAVE_CLI` / `REPORTS_DIR` / `VERDICTS_DIR` / `REVIEWER_AGENT` / `SCRIBE_MODEL`, the `ISSUES` row template and its branch derivation, `REQUIRED_ROW_FIELDS` / `isMissingField` / `assertRequiredRowFields`, `HUMAN_GATED_WORKERS` / `assertNotHumanGated`, `workerBrief()` / `reviewerBrief()` / `scribeBrief()`, the Scribe stage wrapper, and the `pipeline()` fan-out. A citation anywhere that names one of those symbols "in `workflow-driver.md`" resolves through this one hop: the reasoning is here, the code is there.
 
 > **The CLI + the agent-tool schema are the source of truth for shapes.** The two inlined `*_SCHEMA` literals are **copies** of the exported consts in `tools/wave/src/worker-report-schema.ts` + `reviewer-verdict-schema.ts` — the Workflow script runs in a no-fs, no-import sandbox, so it cannot `import` them. The `skill-schema-drift` spec reads these literals from **wave-shared's evidence file** (`wave-shared/evidence/result-schemas.md`) and from the **shipped driver** (`tools/wave/driver/wave-start-inflight.js`) and deep-equals them against the exported engine consts — if they drift, that spec fails loud. **The canonical copies live in `wave-shared/evidence/result-schemas.md`** (moved there from `wave-shared/SKILL.md`, issue #818) **and in the shipped driver's own anyOf-free copy; keep these in sync with those, never hand-edit one copy in isolation.**
 
@@ -206,25 +206,58 @@ from `--anchor`, **verified with `git rev-parse --verify <sha>^{commit}`
 before anything is written** — the host-side anchor-resolvability gate, folded
 in. Nothing is typed twice, so nothing can disagree with itself.
 
-**Four compose-time refusals, before any `agent()` fan-out.** A row whose
-Worker is human-gated, or `foreground`, is refused with its own message and its
-own remedy; a row missing any `REQUIRED_ROW_FIELDS` entry is refused naming the
-row and the field; an anchor that does not resolve is refused naming the SHA;
-and a row with **no install step and a gitignored engine binding** is refused
-naming the binding and the path (below).
-The shipped script keeps its own copies of the first two as the backstop for a
-hand-edited script, and `tools/wave/src/skill-schema-drift.spec.ts` pins those
-copies to the engine's own `REQUIRED_ROW_FIELDS` and `HUMAN_GATED_WORKER`, so
-the two cannot disagree.
+**Compose-time refusals, before or during the per-row build — every one loud,
+never a silent skip, grouped by grain and naming what each message states:**
+
+*Whole-compose* — a handful of usage-level misses exit 2, the rest exit 1:
+
+- `--spine`, `--out` or `--anchor` is missing; `--config` does not load; the
+  wave config declares no `engine.cli` binding; or `--spine` does not read —
+  each naming the missing flag, path or binding (usage-level, exit 2).
+- no row in the spine is in a dispatchable state.
+- one or more rows carry no recorded `wave/<id>-<slug>` branch — naming every
+  such row; run `spine set-branch` first.
+- an anchor that does not resolve is refused naming the SHA.
+- the Reviewer agent name cannot be derived: no plugin manifest is readable at
+  the given or default path, the manifest is not valid JSON, it declares no
+  `name`, or it names no readable agent definition carrying a frontmatter
+  `name:` — each naming the manifest path and the fix (`--plugin-manifest` or
+  `--reviewer-agent`).
+- `--row-meta` names neither inline JSON nor a readable file, or parses to
+  something other than a JSON object keyed by bare row id.
+- the driver template has drifted from what this composer fills — a
+  `const NAME = '…'` constant line is missing, the `const ISSUES = [ … ]`
+  array is missing, or that array's brackets are unbalanced.
+- the composed script does not parse — a `--template` override broke, caught
+  before a byte is written.
+
+*Per-row* — always exit 1, naming the row:
+
+- under `--reviewer-only`, the row has no valid report sidecar at its current
+  iteration — the file does not exist, or does not validate.
+- a row whose Worker is human-gated, or `foreground`, is refused with its own
+  message and its own remedy.
+- a row missing any `REQUIRED_ROW_FIELDS` entry is refused naming the row and
+  the field.
+- a row with **no install step and a gitignored engine binding** is refused
+  naming the binding and the path (below).
+- a row with no dispatched model recorded is refused naming the row and its
+  Risk-derived tier (below).
+
+The shipped script keeps its own copies of the human-gated/`foreground` check
+and the `REQUIRED_ROW_FIELDS` check as the backstop for a hand-edited script,
+and `tools/wave/src/skill-schema-drift.spec.ts` pins those copies to the
+engine's own `REQUIRED_ROW_FIELDS` and `HUMAN_GATED_WORKER`, so the two cannot
+disagree.
 
 **`--reviewer-only` is a mode the verb fills, never a copy anyone patches.**
 The re-review after an answered `reviewer-questions-blocking` (SKILL.md step 8)
 reads each row's report sidecar at its current iteration into the row as
 `reviewerOnlyReport`; the template's Stage 1 returns it instead of dispatching a
 Worker, and Stage 2 passes it through instead of re-writing it. Stage 3 (the
-schema-validated Reviewer) and Stage 4 (the verdict Scribe) are unchanged. A
-missing or invalid sidecar is a fifth refusal, naming the row; the receipt's
-`mode` says which round the script runs.
+schema-validated Reviewer) and Stage 4 (the verdict Scribe) are unchanged. Its
+own refusal — a missing or invalid sidecar, naming the row — is listed above;
+the receipt's `mode` says which round the script runs.
 
 ### `depsSetup` — five precedence levels, and one refusal
 
@@ -349,6 +382,10 @@ numbered list is cited by name from elsewhere in the skill surface.
    (no worktree isolation), gets the same property from the same mechanism —
    **not** from a `cd`, which never reaches the call that would need it (§The
    Scribe's cwd, above). `REPORTS_DIR` / `VERDICTS_DIR` stay absolute regardless.
+   `SCRIBE_MODEL`, filled the same way, is the one exception: it is read from
+   this consumer's optional `models.scribe` binding (`scribeModelFrom`) and may
+   legitimately compose empty — the template's own per-row `|| issue.model`
+   fallback is what reads that emptiness, never a second authoring path.
 5. **Free-form brief text never has to be hand-escaped into a JS literal.** The
    verb serializes every row field through `JSON.stringify`, so an apostrophe in
    an issue title, a reviewer hint or an embedded spec cannot break the script's
@@ -452,7 +489,7 @@ tools/wave/driver/wave-start-inflight.js
 ```
 
 That file **is** the script: the two schema literals, `SCRIBE_RESULT_SCHEMA`,
-the five compose-time constants, the `ISSUES` row template with its per-field
+the compose-time constants, the `ISSUES` row template with its per-field
 comments, the branch derivation, both compose-time assertions, the two
 workspace-setup templates, `workerBrief()`, `reviewerBrief()`, `scribeBrief()`,
 the Scribe stage wrapper and the `pipeline()` fan-out — in that order, under

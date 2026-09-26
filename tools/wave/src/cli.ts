@@ -373,7 +373,7 @@
  * dispatchable state, with its branch/slug/iteration/model), the wave config
  * (the `engine.cli` binding, the store kind, the verify profile) and the store
  * (`read` + `triage-read` per row, unconditionally, at every compose), then
- * substitutes the five compose-time constants and the `ISSUES` array into the
+ * substitutes the compose-time constants and the `ISSUES` array into the
  * SHIPPED driver template (`driver/wave-start-inflight.js`, a package asset
  * exactly as `hooks/` is) and writes the finished script to `--out` — the file
  * the harness's Workflow tool takes as its `scriptPath`. Prints one JSON

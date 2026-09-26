@@ -70,7 +70,7 @@ const WORKFLOW_DRIVER_MD = join(
  * The SHIPPED dispatch driver (issue #680) — the successor to the reference
  * document's `## The script` fence. The script now ships as a package asset
  * (`tools/wave/driver/`, listed in package.json's `files` exactly as `hooks/`
- * is) and the engine's `compose-driver` verb fills its five compose-time
+ * is) and the engine's `compose-driver` verb fills its compose-time
  * constants and its `ISSUES` array; there is no hand-transcribed copy left to
  * drift. So every assertion below that pins the SCRIPT reads THIS file, while
  * the two blocks that pin the reference document's own design PROSE — the
