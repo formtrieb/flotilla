@@ -18,6 +18,8 @@ import {
   WORKER_REPORT_JSON_SCHEMA,
   finishingReportLacksUsablePrUrl,
   outcomeToEvent,
+  undeclaredSchemaKeys,
+  undeclaredWorkerReportKeys,
   validateWorkerReport,
   type WorkerOutcome,
   type WorkerReport,
@@ -420,5 +422,76 @@ describe('WORKER_OUTCOME_VALUES', () => {
       'needs-context',
       'blocked',
     ]);
+  });
+});
+
+// ─── the write-only unknown-key predicate (the Scribe fidelity gate) ────────
+//
+// `write-report` refuses on a non-empty answer; `validateWorkerReport` — shared
+// with the sidecar READER — must stay exactly as permissive as before, so the
+// same payload is asserted against BOTH here.
+
+describe('undeclaredWorkerReportKeys — every key WORKER_REPORT_JSON_SCHEMA does not declare', () => {
+  it('NEGATIVE CONTROL — a well-formed report, optional fields included, names nothing', () => {
+    expect(undeclaredWorkerReportKeys(validReport())).toEqual([]);
+  });
+
+  it('names an undeclared TOP-LEVEL key (the live `verifyOutput` case)', () => {
+    const payload = { ...validReport(), verifyOutput: '20/20 green' };
+    expect(undeclaredWorkerReportKeys(payload)).toEqual(['verifyOutput']);
+  });
+
+  it('names an undeclared key INSIDE the closed filesChanged object, as a path', () => {
+    const payload = { ...validReport(), filesChanged: { new: 1, modified: 0, renamed: 0, deleted: 2 } };
+    expect(undeclaredWorkerReportKeys(payload)).toEqual(['filesChanged.deleted']);
+  });
+
+  it('names every undeclared key, not only the first', () => {
+    const payload = {
+      ...validReport(),
+      verifyOutput: 'x',
+      notes: 'y',
+      filesChanged: { new: 1, modified: 0, renamed: 0, extra: 1 },
+    };
+    expect(undeclaredWorkerReportKeys(payload).sort()).toEqual(['filesChanged.extra', 'notes', 'verifyOutput']);
+  });
+
+  it('judges keys only — a non-object payload or a mistyped field is the validator\'s finding, not this one', () => {
+    expect(undeclaredWorkerReportKeys('not an object')).toEqual([]);
+    expect(undeclaredWorkerReportKeys({ ...validReport(), filesChanged: 'three' })).toEqual([]);
+  });
+
+  it('the shared structural validator stays PERMISSIVE about the same extra keys (the reader reads history)', () => {
+    const payload = {
+      ...validReport(),
+      verifyOutput: 'x',
+      filesChanged: { new: 1, modified: 0, renamed: 0, extra: 1 },
+    };
+    expect(validateWorkerReport(payload)).toEqual({ valid: true, errors: [] });
+  });
+});
+
+describe('undeclaredSchemaKeys — the walker reads the schema literal itself', () => {
+  it('descends into array items and reports an indexed path', () => {
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        rows: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { a: {} } } },
+      },
+    };
+    expect(undeclaredSchemaKeys(schema, { rows: [{ a: 1 }, { a: 1, b: 2 }] })).toEqual(['rows[1].b']);
+  });
+
+  it('an OPEN object node (no additionalProperties: false) names nothing', () => {
+    const schema = { type: 'object', properties: { a: {} } };
+    expect(undeclaredSchemaKeys(schema, { a: 1, b: 2 })).toEqual([]);
+  });
+
+  it('every top-level key the schema literal declares is accepted — the literal is the one owner of the set', () => {
+    const declared = Object.keys(WORKER_REPORT_JSON_SCHEMA.properties);
+    expect(declared.length).toBeGreaterThan(10);
+    const everyDeclared = Object.fromEntries(declared.map((k) => [k, 'x']));
+    expect(undeclaredWorkerReportKeys(everyDeclared)).toEqual([]);
   });
 });

@@ -31,7 +31,9 @@ import {
   runValidateVerdict,
   runWriteReport,
   runWriteVerdict,
+  renderSidecarBody,
 } from './route-cli';
+import { canonicalDigest } from './canonical-json';
 import { readSidecars, type SidecarReader } from './sidecar';
 import { renderSpine, readSpine } from './wave-md-rw';
 import { runSpine } from './spine-cli';
@@ -1312,5 +1314,236 @@ describe('write-report / write-verdict --json (row V5)', () => {
       expect(c.out()).toContain(`--json: `);
       expect(c.out()).toContain(shape);
     }
+  });
+});
+
+// ─── the Scribe fidelity gates (unknown-key refusal + --expect-digest) ───────
+//
+// Live cause: in one wave the Scribe-written sidecar disagreed with the agent's
+// returned payload in 4 of 8 rows — an undeclared top-level `verifyOutput`, and
+// reworded `judgmentCalls`, `reviewerFocusItems` and `acVerification` — and the
+// verb wrote every paraphrase with exit 0. Both gates live in the WRITE verbs
+// only: the reader and the shared validators stay permissive, and the last
+// describe below pins that a historical sidecar carrying an extra key is still
+// read.
+
+interface WriteRun {
+  code: number;
+  out: string;
+  err: string;
+  written: string[];
+  body: string | null;
+}
+
+/** One write-verb call against a fresh temp dir: what it printed, and what landed. */
+function runWrite(
+  verb: (a: string[]) => number,
+  payload: unknown,
+  extra: string[] = [],
+  kind: 'reports' | 'verdicts' = 'reports',
+  id = 'FOR-6',
+): WriteRun {
+  const dir = tmp();
+  const target = join(dir, kind);
+  const f = join(dir, 'p.json');
+  writeFileSync(f, JSON.stringify(payload));
+  const io = captureBoth();
+  const code = verb([f, '--dir', target, '--id', id, '--iter', '1', ...extra]);
+  io.restore();
+  const written = fsReader.list(target);
+  const body = written.length ? readFileSync(join(target, written[0]), 'utf-8') : null;
+  rmSync(dir, { recursive: true, force: true });
+  return { code, out: io.out(), err: io.err(), written, body };
+}
+
+describe('write verbs — an undeclared key is refused (exit 1, nothing written, the key named)', () => {
+  it('NEGATIVE CONTROL — a well-formed report and a well-formed verdict are written', () => {
+    expect(runWrite(runWriteReport, writtenReport)).toMatchObject({ code: 0, written: ['FOR-6-1.md'] });
+    expect(runWrite(runWriteVerdict, writtenVerdict, [], 'verdicts')).toMatchObject({
+      code: 0,
+      written: ['FOR-6-1.md'],
+    });
+  });
+
+  it('a report with an undeclared TOP-LEVEL key (the live `verifyOutput`) → exit 1, nothing written', () => {
+    const r = runWrite(runWriteReport, { ...writtenReport, verifyOutput: '20/20 green' });
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.out).toBe('');
+    expect(r.err).toContain('nothing written');
+    expect(r.err).toContain('undeclared key "verifyOutput"');
+  });
+
+  it('a verdict with an undeclared TOP-LEVEL key → exit 1, nothing written', () => {
+    const r = runWrite(runWriteVerdict, { ...writtenVerdict, summary: 'looks fine' }, [], 'verdicts');
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('undeclared key "summary"');
+  });
+
+  it('an undeclared key inside the FILE-COUNT object is refused', () => {
+    const payload = { ...writtenReport, filesChanged: { new: 1, modified: 0, renamed: 0, deleted: 1 } };
+    const r = runWrite(runWriteReport, payload);
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('undeclared key "filesChanged.deleted"');
+  });
+
+  it('an undeclared key inside an AC-VERIFICATION ROW is refused', () => {
+    const payload = {
+      ...writtenVerdict,
+      acVerification: [{ ac: '#1', met: 'met', evidence: 'x', paraphrase: 'y' }],
+    };
+    const r = runWrite(runWriteVerdict, payload, [], 'verdicts');
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('undeclared key "acVerification[0].paraphrase"');
+  });
+
+  it('an undeclared key inside the documented-form comparison, and inside one of its divergences, is refused', () => {
+    const payload = {
+      ...writtenVerdict,
+      documentedFormComparison: {
+        trigger: 'worker-declared',
+        sources: ['https://example.invalid/doc'],
+        divergences: [{ description: 'a', deliberate: true, severity: 'low' }],
+        note: 'x',
+      },
+    };
+    const r = runWrite(runWriteVerdict, payload, [], 'verdicts');
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('undeclared key "documentedFormComparison.note"');
+    expect(r.err).toContain('undeclared key "documentedFormComparison.divergences[0].severity"');
+  });
+});
+
+describe('write verbs — --expect-digest refuses a payload that is not the one the driver handed over', () => {
+  it('a payload whose digest matches is written (report and verdict)', () => {
+    const r = runWrite(runWriteReport, writtenReport, ['--expect-digest', canonicalDigest(writtenReport)]);
+    expect(r.code).toBe(0);
+    expect(r.written).toEqual(['FOR-6-1.md']);
+    const v = runWrite(
+      runWriteVerdict,
+      writtenVerdict,
+      ['--expect-digest', canonicalDigest(writtenVerdict)],
+      'verdicts',
+    );
+    expect(v.code).toBe(0);
+    expect(v.written).toEqual(['FOR-6-1.md']);
+  });
+
+  it('key REORDERING alone does not change the digest — a reordered file is written under the original digest', () => {
+    const reordered = Object.fromEntries(Object.entries(writtenReport).reverse());
+    expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(writtenReport));
+    const r = runWrite(runWriteReport, reordered, ['--expect-digest', canonicalDigest(writtenReport)]);
+    expect(r.code).toBe(0);
+    expect(r.written).toEqual(['FOR-6-1.md']);
+  });
+
+  it('ONE list element reworded → exit 1, nothing written, stderr names BOTH digests', () => {
+    const handed = { ...writtenReport, judgmentCalls: ['kept the alias, and said why'] };
+    const transcribed = { ...handed, judgmentCalls: ['kept the alias'] };
+    const expected = canonicalDigest(handed);
+    const actual = canonicalDigest(transcribed);
+    expect(actual).not.toBe(expected);
+    const r = runWrite(runWriteReport, transcribed, ['--expect-digest', expected]);
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.out).toBe('');
+    expect(r.err).toContain('payload digest mismatch — nothing written');
+    expect(r.err).toContain(`expected (--expect-digest): ${expected}`);
+    expect(r.err).toContain(`: ${actual}`);
+  });
+
+  it('a reworded AC-verification row on the VERDICT path is refused the same way', () => {
+    const handed = { ...writtenVerdict, acVerification: [{ ac: '#1', met: 'met', evidence: 'route-cli.ts:640' }] };
+    const transcribed = { ...writtenVerdict, acVerification: [{ ac: '#1', met: 'met', evidence: 'route-cli.ts' }] };
+    const r = runWrite(runWriteVerdict, transcribed, ['--expect-digest', canonicalDigest(handed)], 'verdicts');
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain(canonicalDigest(handed));
+    expect(r.err).toContain(canonicalDigest(transcribed));
+  });
+
+  it('the digest is taken over the payload AS READ — before a decorated issue is normalized', () => {
+    const decorated = { ...writtenReport, issue: '#126' };
+    // The faithful copy's digest matches, and the normalization still happens.
+    const ok = runWrite(runWriteReport, decorated, ['--expect-digest', canonicalDigest(decorated)], 'reports', '126');
+    expect(ok.code).toBe(0);
+    expect(ok.err).toContain('notice: write-report: report.issue "#126" is a DECORATED form');
+    expect(ok.body).toContain('"issue": "126"');
+    // A digest of the NORMALIZED record is not what the driver computes, and it mismatches.
+    const normalized = { ...writtenReport, issue: '126' };
+    const bad = runWrite(runWriteReport, decorated, ['--expect-digest', canonicalDigest(normalized)], 'reports', '126');
+    expect(bad.code).toBe(1);
+    expect(bad.written).toEqual([]);
+  });
+
+  it('WITHOUT the flag, behaviour is unchanged — the same reworded payload is written', () => {
+    const transcribed = { ...writtenReport, judgmentCalls: ['kept the alias'] };
+    const r = runWrite(runWriteReport, transcribed);
+    expect(r.code).toBe(0);
+    expect(r.written).toEqual(['FOR-6-1.md']);
+    expect(r.err).toBe('');
+  });
+
+  it('the unknown-key refusal applies WITH the flag too, even when the digest covers the extra key', () => {
+    const smuggled = { ...writtenReport, verifyOutput: 'x' };
+    const r = runWrite(runWriteReport, smuggled, ['--expect-digest', canonicalDigest(smuggled)]);
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('undeclared key "verifyOutput"');
+  });
+
+  it('a value that is not a digest → usage (exit 2), nothing written', () => {
+    const r = runWrite(runWriteReport, writtenReport, ['--expect-digest', 'NOT-A-DIGEST']);
+    expect(r.code).toBe(2);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('is not a digest');
+  });
+
+  it('the flag with no value → usage (exit 2), nothing written', () => {
+    const r = runWrite(runWriteReport, writtenReport, ['--expect-digest']);
+    expect(r.code).toBe(2);
+    expect(r.written).toEqual([]);
+  });
+
+  it('--help names the flag and both refusals, on both verbs', () => {
+    for (const verb of [runWriteReport, runWriteVerdict]) {
+      const io = captureBoth();
+      expect(verb(['--help'])).toBe(0);
+      io.restore();
+      expect(io.out()).toContain('--expect-digest <digest>');
+      expect(io.out()).toContain('A key the canonical schema does not declare');
+    }
+  });
+});
+
+describe('the reader stays permissive — a HISTORICAL sidecar carrying an extra key is still read', () => {
+  it('reads a report sidecar with an undeclared top-level key and a verdict with an undeclared AC-row key', () => {
+    const dir = tmp();
+    const reportsDir = join(dir, 'reports');
+    const verdictsDir = join(dir, 'verdicts');
+    mkdirSync(reportsDir, { recursive: true });
+    mkdirSync(verdictsDir, { recursive: true });
+    // Written the way a pre-gate Scribe wrote them: through the one renderer,
+    // carrying the extra keys the write verb would now refuse.
+    writeFileSync(
+      join(reportsDir, 'FOR-6-1.md'),
+      renderSidecarBody('WorkerReport', 'FOR-6', 1, { ...writtenReport, verifyOutput: '20/20 green' }),
+    );
+    writeFileSync(
+      join(verdictsDir, 'FOR-6-1.md'),
+      renderSidecarBody('ReviewerVerdict', 'FOR-6', 1, {
+        ...writtenVerdict,
+        acVerification: [{ ac: '#1', met: 'met', evidence: 'x', note: 'extra' }],
+      }),
+    );
+    const idx = readSidecars(reportsDir, verdictsDir, fsReader);
+    expect(idx.reportFor('FOR-6')?.report.tests).toBe('20/20 green');
+    expect(idx.verdictFor('FOR-6')?.verdict.acVerification[0].ac).toBe('#1');
+    expect(idx.corruptFor('FOR-6')).toHaveLength(0);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

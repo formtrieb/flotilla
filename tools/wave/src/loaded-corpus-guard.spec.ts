@@ -492,6 +492,9 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
 // a short pointer in their place. That row's own edit re-measures the population at 159,720 B over
 // the same 18 files — 8,280 B of headroom, up from row #997's 819 B — and leaves this constant
 // exactly where row #998 set it, for a later ratchet row to lower.
+// NOT raised by issue #1016 (the Scribe fidelity gates — unknown-key refusal + `--expect-digest`):
+// its one standing-load edit, `reference/convention-05-sidecar-write-path.md` (+1,491 B), re-measures
+// the class at 162,447 B over the same 18 files (next full KB 163,000 < this value) — 5,553 B of headroom left.
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
@@ -1204,6 +1207,10 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // 988 B, re-measured at 1,269,576 B over the same 57 files (next full KB 1,270,000 < this value) —
 // 6,424 B of headroom left. Shared standing load untouched (160,956 B — this row touches no
 // `wave-shared/` file). The ADR file itself is `docs/adr/`, outside both populations by construction.
+// NOT raised by issue #1016 (the Scribe fidelity gates): wave-shared's convention-05-sidecar-write-path.md
+// (+1,491 B, the standing-load line above) and wave-start's workflow-driver.md (+1,236 B) add 2,727 B,
+// re-measured at 1,272,303 B over the same 57 files (next full KB 1,273,000 < this value) — 3,697 B of
+// headroom left.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

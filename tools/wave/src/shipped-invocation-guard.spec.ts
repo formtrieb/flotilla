@@ -594,6 +594,23 @@ describe('shipped invocations resolve to a Verb contract and spell it canonicall
     expect(composed.length).toBe(2);
     for (const call of composed) expect(checkInvocation(call)).toEqual([]);
   });
+
+  it('BOTH composed write calls carry the fidelity digest flag, and it resolves as a declared flag', () => {
+    // The Scribe fidelity gate: each write command ends with the digest of the
+    // payload its brief embeds. A composed call that dropped the flag would
+    // still pass every rule above (the flag is optional), so its presence is
+    // pinned here on its own.
+    const driver = readFileSync(join(CLONE_ROOT, DRIVER_DIR, 'wave-start-inflight.js'), 'utf8');
+    const composed = extractInvocations('driver', driver).filter(
+      (i) => i.tokens[0] === 'write-report' || i.tokens[0] === 'write-verdict',
+    );
+    expect(composed.length).toBe(2);
+    for (const call of composed) {
+      expect(call.tokens, call.tokens.join(' ')).toContain('--expect-digest');
+      expect(call.tokens[call.tokens.indexOf('--expect-digest') + 1]).toBe('${digest}');
+      expect(checkInvocation(call)).toEqual([]);
+    }
+  });
 });
 
 describe('NEGATIVE CONTROLS — the guard is shown red on each of its rules', () => {

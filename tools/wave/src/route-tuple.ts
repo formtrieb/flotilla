@@ -107,6 +107,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import type { IssueStore } from './adapters/issue-store';
+import { canonicalJson } from './canonical-json';
 import { flag, printJson } from './cli-utils';
 import { resolveStore } from './cli-store';
 import { closePhraseFor, slugFromSpinePath, stripBareIds } from './compose-driver';
@@ -568,8 +569,10 @@ interface SidecarDivergence {
 }
 
 /**
- * A JSON value rendered with object keys sorted at every depth — the equality
- * the divergence check compares by.
+ * Compare a sidecar's parsed record with a normalised payload, top-level field
+ * by top-level field, each by its {@link canonicalJson} — keys sorted at every
+ * depth, the ONE canonical form the write verbs' fidelity digest is computed
+ * over too (`canonical-json.ts`).
  *
  * Key ORDER is deliberately not a difference. The sidecar and the payload file
  * are serialised by different hands (the Scribe's `write-report` call and
@@ -577,24 +580,10 @@ interface SidecarDivergence {
  * record that differ only in key order hold the same facts; repairing on that
  * would print a warning about nothing and rewrite a record that was right.
  * Array order IS a difference — `commitShas` and `acVerification` are ordered.
- */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-/**
- * Compare a sidecar's parsed record with a normalised payload, top-level field
- * by top-level field. `null` means they hold the same record — the silent case,
- * and the only one a Reviewer-only round that overwrote its verdict sidecar at
- * the same iteration (last-writer-wins) ever produces.
+ *
+ * `null` means they hold the same record — the silent case, and the only one a
+ * Reviewer-only round that overwrote its verdict sidecar at the same iteration
+ * (last-writer-wins) ever produces.
  */
 function sidecarDivergence(sidecar: unknown, payload: unknown): SidecarDivergence | null {
   const onDisk = sidecar as Record<string, unknown>;

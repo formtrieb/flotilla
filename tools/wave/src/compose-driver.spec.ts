@@ -70,6 +70,7 @@ import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import { HUMAN_GATED_WORKER, readSpine, renderSpine, setRowIter, setRowState, upsertDispatchLogEntry, upsertDispatchLogModel, upsertPrLogRow } from './wave-md-rw';
 import { addDisclosureToSource, setDispositionInSource } from './spine-store';
 import { renderSidecarBody } from './route-cli';
+import { canonicalDigest } from './canonical-json';
 import { main as cliMain, verbContracts } from './cli';
 
 const TEMPLATE = readFileSync(DRIVER_TEMPLATE_PATH, 'utf8');
@@ -536,6 +537,77 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
       `write-report --report-file "${CONSTANTS.repoRoot}/.flotilla/tmp/report-42-1.json" --reports-dir "${CONSTANTS.reportsDir}" --id 42 --iter 1`,
     );
     expect(brief).toContain('"outcome":"done"');
+  });
+
+  /**
+   * The payload line and the write command, read off a RENDERED Scribe brief —
+   * never off a helper call. The payload is the line immediately above step 3;
+   * the write command is the one line naming the verb's canonical file flag.
+   */
+  function scribeParts(brief: string, verb: 'write-report' | 'write-verdict'): {
+    payloadLine: string;
+    writeLine: string;
+    digest: string;
+  } {
+    const lines = brief.split('\n');
+    const step3 = lines.findIndex((l) => l.startsWith('3. As a SEPARATE Bash call'));
+    expect(step3, 'the rendered brief must carry step 3').toBeGreaterThan(0);
+    const payloadLine = lines[step3 - 1];
+    const writeLines = lines.filter((l) => l.includes(`${verb} --${verb === 'write-report' ? 'report' : 'verdict'}-file `));
+    expect(writeLines, 'exactly one rendered write command').toHaveLength(1);
+    const match = /--expect-digest ([0-9a-f]{16})$/.exec(writeLines[0]);
+    expect(match, `the write command must END with --expect-digest <digest>: ${writeLines[0]}`).not.toBeNull();
+    return { payloadLine, writeLine: writeLines[0], digest: (match as RegExpExecArray)[1] };
+  }
+
+  it("the Scribe write command carries the digest of EXACTLY the payload embedded in that brief (report and verdict, both rows)", async () => {
+    const { calls, result } = await runComposedDriver(script);
+    const digests = new Set<string>();
+    for (const [id, kind, verb] of [
+      ['42', 'report', 'write-report'],
+      ['42', 'verdict', 'write-verdict'],
+      ['43', 'report', 'write-report'],
+      ['43', 'verdict', 'write-verdict'],
+    ] as const) {
+      const label = `scribe-${kind}:${id}`;
+      const brief = calls.find((c) => c.opts.label === label)!.brief;
+      const { payloadLine, digest } = scribeParts(brief, verb);
+      // The embedded line is the payload the producing stage returned…
+      const tuple = result.find((t) => t.id === id)!;
+      expect(payloadLine, label).toBe(JSON.stringify(tuple[kind]));
+      // …and the digest in the command is the ENGINE helper's digest of that line, parsed.
+      expect(digest, label).toBe(canonicalDigest(JSON.parse(payloadLine)));
+      digests.add(digest);
+    }
+    // Two distinct payload shapes (the stub's report and verdict, each identical
+    // across rows but for the report's `issue`), so at least three distinct digests.
+    expect(digests.size).toBeGreaterThanOrEqual(3);
+  });
+
+  it('END TO END — the rendered payload line + the rendered digest pass the REAL write verb; one reworded element does not', async () => {
+    const { calls } = await runComposedDriver(script);
+    const brief = calls.find((c) => c.opts.label === 'scribe-report:42')!.brief;
+    const { payloadLine, digest } = scribeParts(brief, 'write-report');
+    const dir = mkdtempSync(join(tmpdir(), 'scribe-digest-'));
+    const reportsDir = join(dir, 'reports');
+    const faithful = join(dir, 'faithful.json');
+    const paraphrased = join(dir, 'paraphrased.json');
+    writeFileSync(faithful, payloadLine);
+    const parsed = JSON.parse(payloadLine) as { judgmentCalls: string[] };
+    writeFileSync(paraphrased, JSON.stringify({ ...parsed, judgmentCalls: [`${parsed.judgmentCalls[0]} (reworded)`] }));
+    const out = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const err = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const args = (f: string) => ['write-report', '--report-file', f, '--reports-dir', reportsDir, '--id', '42', '--iter', '1', '--expect-digest', digest];
+      expect(cliMain(args(paraphrased))).toBe(1);
+      expect(existsSync(join(reportsDir, '42-1.md'))).toBe(false);
+      expect(cliMain(args(faithful))).toBe(0);
+      expect(existsSync(join(reportsDir, '42-1.md'))).toBe(true);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('the two agent-boundary schemas reach `agent({ schema })` free of a top-level combinator', async () => {
