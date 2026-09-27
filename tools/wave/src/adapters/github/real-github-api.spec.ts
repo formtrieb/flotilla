@@ -1052,10 +1052,38 @@ describe('RealGitHubApi', () => {
       expect(http.requests).toHaveLength(1);
     });
 
-    it('throws a typed GitHubApiError carrying GitHub message on a non-204 (422 reference not found)', async () => {
-      const { api } = makeApi(() => ({ status: 422, json: { message: 'Reference does not exist' } }));
+    it(
+      'field-report case (#1031): a 422 "Reference does not exist" reads as already-gone success, ' +
+        'not an error — this repository runs with auto-delete-on-merge ON, and GitHub\'s own ' +
+        'background delete can beat this call\'s DELETE to the ref',
+      async () => {
+        const { api } = makeApi(() => ({ status: 422, json: { message: 'Reference does not exist' } }));
+        await expect(api.deleteBranch('wave/x')).resolves.toBeUndefined();
+      },
+    );
+
+    it('a 422 with any OTHER message still throws — the already-gone match is exact, not loose', async () => {
+      const { api } = makeApi(() => ({ status: 422, json: { message: 'Reference update failed' } }));
       await expect(api.deleteBranch('wave/x')).rejects.toMatchObject({ name: 'GitHubApiError', status: 422, op: 'deleteBranch' });
-      await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Reference does not exist/);
+      await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Reference update failed/);
+    });
+
+    it('a 403 (e.g. a protected branch) still throws, carrying GitHub\'s message', async () => {
+      const { api } = makeApi(() => ({ status: 403, json: { message: 'Protected branch' } }));
+      await expect(api.deleteBranch('wave/x')).rejects.toMatchObject({ name: 'GitHubApiError', status: 403, op: 'deleteBranch' });
+      await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Protected branch/);
+    });
+
+    it('a 404 still throws — unlike Bitbucket, GitHub\'s 404 is ambiguous (no access vs. no ref)', async () => {
+      const { api } = makeApi(() => ({ status: 404, json: { message: 'Not Found' } }));
+      await expect(api.deleteBranch('wave/x')).rejects.toMatchObject({ name: 'GitHubApiError', status: 404, op: 'deleteBranch' });
+      await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Not Found/);
+    });
+
+    it('a 500 still throws, carrying GitHub\'s message', async () => {
+      const { api } = makeApi(() => ({ status: 500, json: { message: 'Internal Server Error' } }));
+      await expect(api.deleteBranch('wave/x')).rejects.toMatchObject({ name: 'GitHubApiError', status: 500, op: 'deleteBranch' });
+      await expect(api.deleteBranch('wave/x')).rejects.toThrow(/Internal Server Error/);
     });
   });
 

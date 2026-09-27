@@ -204,6 +204,24 @@ function saysAlreadyExists(json: unknown): boolean {
   return typeof message === 'string' && /already exists/i.test(message);
 }
 
+/**
+ * GitHub's exact 422 body `message` for a ref delete aimed at a ref that is
+ * already gone (docs.github.com/en/rest/git/refs "Delete a reference", the
+ * documented 422 case, re-read 2026-09-27). Pinned as a literal, EXACT match —
+ * deliberately narrower than {@link saysAlreadyExists}'s tolerant regex above:
+ * a 404 on this same endpoint is documented as ambiguous on GitHub (no repo
+ * access reads the same as no repo), so a 404 must still throw, and widening
+ * this match beyond the one documented already-gone string would risk quietly
+ * swallowing a 422 that means something else. See {@link RealGitHubApi.deleteBranch}.
+ */
+const REF_DELETE_ALREADY_GONE_MESSAGE = 'Reference does not exist';
+
+/** True when a 422 ref-delete body is GitHub's documented already-gone answer. */
+function refAlreadyGone(json: unknown): boolean {
+  const message = (json as { message?: unknown } | null)?.message;
+  return message === REF_DELETE_ALREADY_GONE_MESSAGE;
+}
+
 /** {@link MergeMethod} → the GraphQL `PullRequestMergeMethod` enum. */
 const GQL_MERGE_METHOD: Record<MergeMethod, string> = {
   squash: 'SQUASH',
@@ -958,9 +976,32 @@ export class RealGitHubApi implements GitHubApi {
    * Delete a remote branch — REST `DELETE /repos/{o}/{r}/git/refs/heads/{branch}`
    * (204 No Content on success). The `host-pr merge --delete-branch` hygiene step
    * (consumer KW-F6), called only after a successful merge. Throws a typed
-   * {@link GitHubApiError} on any non-204 so the merge path records the failure
-   * STRUCTURALLY — e.g. a 422 "Reference does not exist" (the branch is already
-   * gone) surfaces as a reported degradation, never a merge failure.
+   * {@link GitHubApiError} on any non-success answer so the merge path records
+   * the failure STRUCTURALLY — a protected branch, a 403, a 404, a 5xx, or a 422
+   * whose message is anything OTHER than the one named below.
+   *
+   * **A 422 "Reference does not exist" is ALSO success (issue #1031, a live
+   * field report — mirrors the Bitbucket adapter's identical #495 precedent for
+   * ITS already-gone answer, `RealBitbucketApi.deleteBranch`).** This repository
+   * runs with "Automatically delete head branches" ON, so GitHub's own
+   * background delete occasionally beats this call's own DELETE to the ref: by
+   * the time this request lands, the branch this call is trying to remove is
+   * already gone — exactly the STATE this call is trying to reach, not a
+   * failure of it. Treating it as a throw made a successful merge report
+   * `branchDeletion.deleted: false` with an error, sending the operator down a
+   * manual-sweep fallback for a branch that was never there to sweep.
+   *
+   * The match is deliberately NARROW — the literal, documented 422 body
+   * `message` string, nothing looser (see {@link REF_DELETE_ALREADY_GONE_MESSAGE}).
+   * **A 404 on GitHub is NOT treated as already-gone**, unlike Bitbucket's 404:
+   * GitHub's own docs read a 404 here as ambiguous (no access to the ref reads
+   * the same as no ref at all), so on GitHub — unlike Bitbucket, where a 404 on
+   * this same sub-resource can only mean the ref, never the repo, because the
+   * call always follows a successful merge against that same repository path —
+   * a 404 stays a genuine, reported failure. Any other 422 (a different message
+   * entirely), a 403, a 404, or a 5xx all still throw below, so a genuinely
+   * failing delete (protected, permission-denied, transient host error) stays a
+   * reported, best-effort-failed deletion, never silently swallowed.
    *
    * The branch is interpolated as a REF PATH: a `wave/FOR-xx` branch's slashes
    * are path separators GitHub matches on, so each segment is encoded
@@ -971,9 +1012,10 @@ export class RealGitHubApi implements GitHubApi {
     const ref = branch.split('/').map(encodeURIComponent).join('/');
     const res = await this.send('DELETE', `${this.base()}/git/refs/heads/${ref}`);
     // GitHub returns 204 on a successful ref delete; tolerate a 200 defensively.
-    if (res.status !== 204 && res.status !== 200) {
-      throw new GitHubApiError(res.status, 'deleteBranch', ghMessage(res.json, 'deleteBranch'));
-    }
+    if (res.status === 204 || res.status === 200) return;
+    // 422 "Reference does not exist" is ALSO success — see the docblock above.
+    if (res.status === 422 && refAlreadyGone(res.json)) return;
+    throw new GitHubApiError(res.status, 'deleteBranch', ghMessage(res.json, 'deleteBranch'));
   }
 
   /**
