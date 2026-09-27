@@ -486,7 +486,7 @@ describe('sandbox-scaffold-guard — setup-mechanics.md documents the rule this 
     expect(setupMd).toMatch(/docker.*worked example/i);
   });
 
-  it('documents the measure-first ordering (ADR-0049\'s one open assumption) ahead of the scaffold JSON', () => {
+  it('documents the measure-first ordering (the carrier is measured; the per-consumer probe still runs first) ahead of the scaffold JSON', () => {
     const measureIdx = setupMd.indexOf('Measuring whether the tracked sandbox block is honored');
     const scaffoldIdx = setupMd.indexOf('The scaffold JSON — deriving');
     expect(measureIdx).toBeGreaterThan(-1);

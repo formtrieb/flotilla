@@ -1,6 +1,6 @@
 # The tracked `sandbox` block's scope — grounding beyond the baseline probe
 
-Evidence class — moved out of [reference/setup-mechanics.md](../reference/setup-mechanics.md#measuring-whether-the-tracked-sandbox-block-is-honored--the-probe-issue-716-adr-0049s-one-open-assumption) (issue #817, 2026-09-26) so the go/no-go rule stays in the reference as its own compact form; this file is the documentation citation and structural analogy behind it.
+Evidence class — moved out of [reference/setup-mechanics.md](../reference/setup-mechanics.md#measuring-whether-the-tracked-sandbox-block-is-honored--the-probe-issue-716) (issue #817, 2026-09-26) so the go/no-go rule stays in the reference as its own compact form; this file is the documentation citation and structural analogy behind it.
 
 ## Why this grounding exists
 
