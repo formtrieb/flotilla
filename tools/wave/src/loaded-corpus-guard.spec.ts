@@ -495,6 +495,10 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
 // NOT raised by issue #1016 (the Scribe fidelity gates — unknown-key refusal + `--expect-digest`):
 // its one standing-load edit, `reference/convention-05-sidecar-write-path.md` (+1,491 B), re-measures
 // the class at 162,447 B over the same 18 files (next full KB 163,000 < this value) — 5,553 B of headroom left.
+// NOT raised by issue #1041 (documents the Coordinator's own two sidecar-write paths as digest-free
+// by design): its one standing-load edit, the same `convention-05-sidecar-write-path.md` (+445 B),
+// re-measures the class at 162,892 B over the same 18 files (next full KB 163,000 < this value) —
+// 108 B of headroom left.
 
 /**
  * The loaded corpus — every `.md` a run can reach, `evidence/` excluded.
@@ -1215,6 +1219,10 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // SKILL.md (+481 B), start-mechanics.md (+630 B) and workflow-driver.md (+262 B) add 1,373 B, re-measured at
 // 1,273,676 B over the same 57 files (next full KB 1,274,000 < this value) — 2,324 B of headroom left.
 // Shared standing load untouched (162,447 B — this row touches no `wave-shared/` file).
+// NOT raised by issue #1041 (documents the Coordinator's own two sidecar-write paths as digest-free
+// by design): the one touched file, `reference/convention-05-sidecar-write-path.md` (+445 B, the
+// standing-load line above), re-measures the population at 1,274,718 B over the same 57 files (next
+// full KB 1,275,000 < this value) — 282 B of headroom left.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
