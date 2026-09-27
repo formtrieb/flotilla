@@ -1190,6 +1190,14 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // touched skill file, to-issues/SKILL.md, adds 515 B, re-measured at 1,272,843 B over the same 57
 // files (next full KB 1,273,000 < this value) — 3,157 B of headroom left. Shared standing load
 // untouched (160,956 B — none of this row's edits touch `wave-shared/`).
+// NOT raised or lowered by issue #1030 (wave-setup's third residual-form diet pass): history and
+// derivation prose moved out of setup-mechanics.md's AFK harness config scaffold, guard-hooks
+// subsection and credential lookup-command scaffold into three new evidence/ siblings (excluded
+// from this measure by definition), leaving every guard-pinned span byte-identical. Net −4,307 B
+// on the one touched skill file. This row's own edit re-measures the population at 1,268,536 B
+// over the same 57 files — 7,464 B of headroom, up from row #1007's 3,157 B — and leaves this
+// constant exactly where row #998 set it, for a later ratchet row to lower. Shared standing load
+// untouched (160,956 B — this row touches no `wave-shared/` file).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
