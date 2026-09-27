@@ -1719,6 +1719,48 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
   });
 
   /**
+   * The env every child `git` process in this describe block runs under
+   * (issue #996): no inherited `GIT_*` variable survives — a `GIT_DIR` or
+   * `GIT_AUTHOR_*` set on the machine running this suite must not leak into
+   * a throwaway fixture repo — and the user's own global/system config is
+   * never consulted (`GIT_CONFIG_GLOBAL` pointed at `/dev/null` reads as an
+   * empty global config; `GIT_CONFIG_NOSYSTEM` drops `/etc/gitconfig` too),
+   * so a `~/.gitconfig` with a commit template, a signing requirement, or a
+   * hook path cannot change what a fixture builds.
+   */
+  function isolatedGitEnv(at: string): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (key.startsWith('GIT_')) continue;
+      if (value === undefined) continue;
+      env[key] = value;
+    }
+    env.GIT_CONFIG_GLOBAL = '/dev/null';
+    env.GIT_CONFIG_NOSYSTEM = '1';
+    env.GIT_AUTHOR_DATE = at;
+    env.GIT_COMMITTER_DATE = at;
+    return env;
+  }
+
+  /**
+   * `-c` flags every invocation below carries, so the machine's own defaults
+   * for gc, maintenance, fsmonitor and hooks never fire against a throwaway
+   * fixture repo (issue #996) — none of this suite's fixtures wants a
+   * background `git gc`, a maintenance run, an fsmonitor watch, or a local
+   * hook competing with the test process for the same directory.
+   */
+  const ISOLATED_GIT_CONFIG_FLAGS = [
+    '-c',
+    'gc.auto=0',
+    '-c',
+    'maintenance.auto=false',
+    '-c',
+    'core.fsmonitor=false',
+    '-c',
+    'core.hooksPath=/dev/null',
+  ];
+
+  /**
    * `at` defaults to the suite-wide {@link COMMIT_AT}, which is what every
    * fixture but one wants. The merge fixture near the bottom of this block is
    * the exception: it needs its two parents committed BEFORE the advisory's
@@ -1726,15 +1768,11 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
    * a window whose sole touching commit is a merge.
    */
   function git(repo: string, args: string[], at: string = COMMIT_AT): void {
-    execFileSync('git', args, {
+    execFileSync('git', [...ISOLATED_GIT_CONFIG_FLAGS, ...args], {
       cwd: repo,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        GIT_AUTHOR_DATE: at,
-        GIT_COMMITTER_DATE: at,
-      },
+      env: isolatedGitEnv(at),
     });
   }
 
@@ -1803,13 +1841,98 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
 
   /** The abbreviated shas `git log --format=%h` reports for `rel`, newest first. */
   function shasTouching(repo: string, rel: string): string[] {
-    return execFileSync('git', ['log', '--format=%h', '--', rel], {
-      cwd: repo,
-      encoding: 'utf-8',
-    })
+    return execFileSync(
+      'git',
+      [...ISOLATED_GIT_CONFIG_FLAGS, 'log', '--format=%h', '--', rel],
+      {
+        cwd: repo,
+        encoding: 'utf-8',
+        env: isolatedGitEnv(COMMIT_AT),
+      },
+    )
       .trim()
       .split('\n')
       .filter((line) => line.length > 0);
+  }
+
+  /**
+   * Append `count` commits onto `repo`'s existing `main` tip, each touching
+   * `rel` with distinct content, in exactly THREE git processes total
+   * (`rev-parse` the current tip, one `git fast-import` stream, one
+   * `git reset --hard` to sync the checkout) regardless of `count` — never
+   * `count` git processes, let alone `2 * count` (issue #996). The staleness
+   * cap fixture below needs {@link STALENESS_COMMIT_CAP} (200) such commits;
+   * building them via `count` sequential `write file → add → commit` cycles
+   * (~400 synchronous git processes) was the load-sensitive shape that
+   * occasionally lost a race against a concurrent typecheck on a shared
+   * machine — a `git commit` reading back an index entry for a blob another
+   * of that same cycle's processes had only just written ("invalid object …
+   * Error building trees" per issue #996's Provenance). `fast-import` writes
+   * every blob, tree and commit from one in-memory stream in a single
+   * process, so there is no filesystem round-trip between commits for a
+   * loaded machine to race.
+   *
+   * Every commit is pinned to the same `at` timestamp {@link commitFile}
+   * pins to (by default, the suite-wide {@link COMMIT_AT}), and each
+   * commit's message and file content are byte-identical to what
+   * `commitFile(repo, rel, \`${messagePrefix} ${i}\`)` would have produced —
+   * this is a faster way to build the SAME history, not a different one.
+   */
+  function fastImportCommits(
+    repo: string,
+    rel: string,
+    count: number,
+    messagePrefix: string,
+    at: string = COMMIT_AT,
+  ): void {
+    const branch = 'main';
+    const env = isolatedGitEnv(at);
+
+    const parentSha = execFileSync(
+      'git',
+      [...ISOLATED_GIT_CONFIG_FLAGS, 'rev-parse', branch],
+      { cwd: repo, encoding: 'utf-8', env },
+    ).trim();
+
+    const whenSeconds = Math.floor(new Date(at).getTime() / 1000);
+    const when = `${whenSeconds} +0000`;
+    const identity = `Test <test@example.com> ${when}`;
+
+    let stream = '';
+    for (let i = 0; i < count; i++) {
+      const messageLine = `${messagePrefix} ${i}\n`;
+      const messageBytes = Buffer.byteLength(messageLine, 'utf-8');
+      const fileLine = `// ${messagePrefix} ${i}\n`;
+      const fileBytes = Buffer.byteLength(fileLine, 'utf-8');
+
+      stream += `commit refs/heads/${branch}\n`;
+      stream += `author ${identity}\n`;
+      stream += `committer ${identity}\n`;
+      stream += `data ${messageBytes}\n${messageLine}`;
+      if (i === 0) {
+        stream += `from ${parentSha}\n`;
+      }
+      stream += `M 100644 inline ${rel}\n`;
+      stream += `data ${fileBytes}\n${fileLine}`;
+    }
+
+    execFileSync('git', [...ISOLATED_GIT_CONFIG_FLAGS, 'fast-import', '--quiet'], {
+      cwd: repo,
+      input: stream,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: 8 * 1024 * 1024,
+      env,
+    });
+
+    // `fast-import` moves the ref directly without touching the checked-out
+    // worktree/index; sync both to the new tip so the repo is left in the
+    // same state the per-commit shape it replaces would have left it in.
+    execFileSync('git', [...ISOLATED_GIT_CONFIG_FLAGS, 'reset', '--hard', branch], {
+      cwd: repo,
+      encoding: 'utf-8',
+      env,
+    });
   }
 
   // ── it FIRES ────────────────────────────────────────────────────────────
@@ -1975,9 +2098,13 @@ describe('Gate 9 — the staleness advisory (files-touched-since-tracker-update)
       // halves move together, which is what makes this a pin rather than a
       // coincidence. A literal here would keep passing against a changed
       // constant only by building the wrong number of commits.
-      for (let i = 0; i < STALENESS_COMMIT_CAP; i++) {
-        commitFile(repo, 'src/foo.ts', `capped touch ${i}`);
-      }
+      //
+      // Built via `fastImportCommits` (issue #996), not `count` sequential
+      // `commitFile` calls: the same STALENESS_COMMIT_CAP commits, each with
+      // the same "capped touch N" message and the same `// capped touch N\n`
+      // file content a per-commit build would have produced, but in O(1) git
+      // processes rather than one that scaled with the cap.
+      fastImportCommits(repo, 'src/foo.ts', STALENESS_COMMIT_CAP, 'capped touch');
 
       const g = gate(
         validateIssueView(
