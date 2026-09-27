@@ -80,6 +80,7 @@ import {
   assertAcceptanceCriteriaShape,
   writeBlockedBy,
   decoratedBlockedBy,
+  filesListLines,
 } from '../body-codec';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
@@ -248,7 +249,7 @@ export class GitHubIssuesStore implements IssueStore {
     // prose) are preserved (NOT a parseBody→serializeBody round-trip).
     let body = gh.body;
     if (patch.files !== undefined) {
-      body = replaceSection(body, 'Files', patch.files.map((f) => `- ${f}`));
+      body = replaceSection(body, 'Files', filesListLines(patch.files));
     }
     if (patch.filesAdd !== undefined) body = appendToFilesSection(body, patch.filesAdd);
     if (patch.acceptanceCriteria !== undefined) {

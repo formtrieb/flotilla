@@ -177,8 +177,10 @@ describe('appendToFilesSection — the tracker-body `## Files` shape', () => {
   const body = '**Parent:** #1\n\n## Files\n\n- a.ts\n- b.ts\n\n## Blocked by\n\nnone\n';
 
   it('inserts after the last item and leaves every other line alone', () => {
+    // the existing (legacy bare) lines stay byte-identical; the new one is
+    // written in the shared code-span encoding
     expect(appendToFilesSection(body, ['b.ts', 'c.ts'])).toBe(
-      '**Parent:** #1\n\n## Files\n\n- a.ts\n- b.ts\n- c.ts\n\n## Blocked by\n\nnone\n',
+      '**Parent:** #1\n\n## Files\n\n- a.ts\n- b.ts\n- `c.ts`\n\n## Blocked by\n\nnone\n',
     );
   });
 
@@ -188,7 +190,32 @@ describe('appendToFilesSection — the tracker-body `## Files` shape', () => {
   });
 
   it('writes a fresh section when there is none', () => {
-    expect(appendToFilesSection('prose only\n', ['x.ts'])).toBe('prose only\n\n## Files\n\n- x.ts\n');
+    expect(appendToFilesSection('prose only\n', ['x.ts'])).toBe('prose only\n\n## Files\n\n- `x.ts`\n');
+  });
+
+  // A body filed before the code-span encoding, as Linear stored it: bare
+  // entries with backslash escapes added, `*` bullets. A `filesAdd` of those
+  // same entries in their plain form must see them as already listed.
+  it('adds no duplicate of an entry already present in legacy bare, Linear-escaped form', () => {
+    const legacy =
+      '## Files\n\n* libs/x/.storybook/\\*\\*\n* src/lib/\\_components/a.ts\n* libs/\\*\\*/\\*.spec.ts\n\n## Blocked by\n\nnone\n';
+    expect(
+      appendToFilesSection(legacy, [
+        'libs/x/.storybook/**',
+        'src/lib/_components/a.ts',
+        'libs/**/*.spec.ts',
+      ]),
+    ).toBe(legacy);
+    // …and a genuinely new entry is still appended, after the last legacy item
+    expect(appendToFilesSection(legacy, ['src/lib/_components/a.ts', 'new/_x.ts'])).toBe(
+      '## Files\n\n* libs/x/.storybook/\\*\\*\n* src/lib/\\_components/a.ts\n* libs/\\*\\*/\\*.spec.ts\n- `new/_x.ts`\n\n## Blocked by\n\nnone\n',
+    );
+  });
+
+  it('treats an entry and its code-span form as the same entry', () => {
+    const encoded = '## Files\n\n- `src/_a/**` ← widened\n';
+    expect(appendToFilesSection(encoded, ['src/_a/**'])).toBe(encoded);
+    expect(filesToAppend(['`src/_a/**` ← widened'], ['src/_a/**', 'src/\\_a/\\*\\*'])).toEqual([]);
   });
 });
 

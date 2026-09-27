@@ -29,6 +29,7 @@ runIssueStoreConformance('GitHubIssuesStore', (): ConformanceHarness => ({
   },
   hooks: githubConformanceHooks,
   baseInput,
+  retainsFilesAnnotations: true,
   // #654: the native-only blocked-by edge case reaches through the store to
   // its injected fake — the same test-affordance stance `githubConformanceHooks`
   // itself takes above.
@@ -485,7 +486,7 @@ describe('GitHubIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
 
     await store.annotate(id, { filesAdd: ['src/b.ts', 'src/c.ts'] });
     const after = (await api.getIssue(n)).body;
-    expect(after).toBe(before.replace('- src/b.ts\n', '- src/b.ts\n- src/c.ts\n'));
+    expect(after).toBe(before.replace('- `src/b.ts`\n', '- `src/b.ts`\n- `src/c.ts`\n'));
 
     await store.annotate(id, { filesAdd: ['src/c.ts', 'src/a.ts'] }); // all already listed
     expect((await api.getIssue(n)).body).toBe(after);
@@ -500,8 +501,8 @@ describe('GitHubIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
     await store.annotate(String(number), { filesAdd: ['src/x.ts', 'src/x.ts'] });
     const body = (await api.getIssue(number)).body;
     expect(body).toContain('Some free-form prose with no managed sections yet.');
-    expect(body).toMatch(/## Files\n\n- src\/x\.ts\n/);
-    expect(body.match(/- src\/x\.ts/g)).toHaveLength(1);
+    expect(body).toMatch(/## Files\n\n- `src\/x\.ts`\n/);
+    expect(body.match(/- `src\/x\.ts`/g)).toHaveLength(1);
   });
 
   it('the mirror reconciles from the UPDATED (post-patch) body, not the stale pre-patch read', async () => {

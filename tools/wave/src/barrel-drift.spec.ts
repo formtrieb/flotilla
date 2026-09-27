@@ -382,6 +382,12 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
       "Adapter-internal body-codec helper (see ParsedBody above) — the `## Blocked by` section write GitHub's and Linear's `block`/`unblock` share (ADR-0054).",
     decoratedBlockedBy:
       "Adapter-internal body-codec helper (see ParsedBody above) — reads the body's own `Blocked by` refs for `block`/`unblock`, refusing a bare body (ADR-0054).",
+    filesListLines:
+      'Adapter-internal body-codec helper (see ParsedBody above) — the one builder of `## Files` list lines (each entry an inline code span, so a markdown-normalizing tracker cannot rewrite it), shared by serializeBody, the issue-store Files-append helper, and the GitHub/Linear annotate paths.',
+    filesListItems:
+      'Adapter-internal body-codec helper (see ParsedBody above) — the one `## Files` list-item matcher parseBody and the issue-store Files-append helper share.',
+    decodeFilesEntry:
+      "Adapter-internal body-codec helper (see ParsedBody above) — the inverse of the Files entry encoding (code span stripped; a legacy bare entry's Linear escapes reversed), used by parseBody and the issue-store Files dedup key.",
   },
   // ─── the Bitbucket LANDING adapter ──────────────────────────────────────
   //

@@ -229,7 +229,7 @@ export function serializeBody(input: BodyInput): string {
     parts.push(`## ${s.heading}`, '', s.markdown.trimEnd(), '');
   }
   parts.push('## Files', '');
-  for (const f of input.files) parts.push(`- ${f}`);
+  parts.push(...filesListLines(input.files));
   parts.push('');
 
   parts.push('## Blocked by', '');
@@ -280,9 +280,111 @@ export function serializeBareBody(
   return parts.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
+// ─── the Files ENTRY codec — one encode, one decode, for every store ─────────
+//
+// A `## Files` entry is a path or a glob, and a glob is exactly the text a
+// markdown renderer reads as emphasis: `**`, a lone `*`, a `__x__`, a
+// segment-leading `_`. GitHub and the markdown-file store keep a body verbatim,
+// so a BARE list item (`- src/**`) used to round-trip by accident. Linear does
+// not: it normalizes a description's markdown on save, so a bare entry came back
+// with backslash escapes added (`src/\*\*`, `\_components/`) and a `__x__`
+// turned into `**x**` — the underscores lost for good. The Files list is the
+// conflict boundary, so an entry that reads back differently from the path it
+// names silently stops matching that path.
+//
+// The fix is one encoding, applied by every writer: each entry is written as an
+// inline CODE SPAN, whose contents no markdown normalizer touches. A trailing
+// `← annotation` stays OUTSIDE the span — it is prose about the entry, not part
+// of the path. On read, one surrounding code span is stripped; an entry with no
+// code span (a body written before this encoding) has Linear's backslash escapes
+// of `*` and `_` reversed. A `__x__` already mangled into `**x**` is NOT
+// recoverable — nothing in `**x**` says whether it began as `__x__` or as a
+// genuine `**` glob pair — so the decoder does not guess.
+
+/** The ` ← annotation` tail of a Files entry: whitespace, then `←`, then anything. */
+const FILES_ANNOTATION_TAIL = /\s+←.*$/s;
+
+/** Reverse Linear's backslash escapes of `*` and `_` — the only two it adds to a Files entry. */
+function unescapeLinearMarkdown(text: string): string {
+  return text.replace(/\\([*_])/g, '$1');
+}
+
+/**
+ * Encode ONE `## Files` entry as the list-item text the codec writes: the path
+ * or glob as an inline code span, any trailing `← annotation` left outside it.
+ *
+ * The fence is one backtick longer than the longest backtick run inside the
+ * path (CommonMark: a span closes only on a run of exactly its own length), and
+ * the contents are space-padded when they begin or end with a backtick or a
+ * space, since a renderer strips one space from each side of such a span.
+ * {@link decodeFilesEntry} is the exact inverse.
+ */
+function encodeFilesEntry(entry: string): string {
+  const trimmed = entry.trim();
+  const tailMatch = FILES_ANNOTATION_TAIL.exec(trimmed);
+  const path = tailMatch ? trimmed.slice(0, tailMatch.index) : trimmed;
+  const tail = tailMatch ? tailMatch[0] : '';
+  if (path === '') return trimmed; // nothing to fence — an annotation with no path is left as written
+  const longestRun = Math.max(0, ...(path.match(/`+/g) ?? []).map((r) => r.length));
+  const fence = '`'.repeat(longestRun + 1);
+  const pad = /^[` ]|[` ]$/.test(path) ? ' ' : '';
+  return `${fence}${pad}${path}${pad}${fence}${tail}`;
+}
+
+/**
+ * Decode ONE `## Files` list-item text back to the entry that was written: strip
+ * one surrounding code span (the {@link encodeFilesEntry} shape); for an item
+ * with NO leading code span — a body filed before that encoding — reverse the
+ * backslash escapes Linear adds to `*` and `_`. The annotation tail outside the
+ * span gets the same unescape, because Linear normalizes it as ordinary text.
+ */
+export function decodeFilesEntry(item: string): string {
+  const text = item.trim();
+  const open = /^`+/.exec(text);
+  if (open) {
+    const n = open[0].length;
+    // The closing fence is the first backtick run of EXACTLY n after the opener.
+    const closeRe = /`+/g;
+    closeRe.lastIndex = n;
+    for (let m = closeRe.exec(text); m !== null; m = closeRe.exec(text)) {
+      if (m[0].length !== n) continue;
+      let content = text.slice(n, m.index);
+      if (content.length >= 2 && content.startsWith(' ') && content.endsWith(' ') && content.trim() !== '') {
+        content = content.slice(1, -1);
+      }
+      return content + unescapeLinearMarkdown(text.slice(m.index + n));
+    }
+  }
+  return unescapeLinearMarkdown(text);
+}
+
+/** The `## Files` list lines for `entries` — the one place a Files list item is built. */
+export function filesListLines(entries: readonly string[]): string[] {
+  return entries.map((f) => `- ${encodeFilesEntry(f)}`);
+}
+
+/**
+ * The raw list-item texts under a `## Files`-style section (`- x` / `* x`, the
+ * bullet stripped, NOT decoded), each with its 0-based line index in `lines`.
+ * The one list-item matcher the Files readers share, so the parse side and the
+ * append side can never disagree about what counts as an entry.
+ */
+export function filesListItems(lines: readonly string[]): { text: string; line: number }[] {
+  const out: { text: string; line: number }[] = [];
+  lines.forEach((line, i) => {
+    const m = /^[-*]\s+(.+)$/.exec(line.trim());
+    if (m) out.push({ text: m[1].trim(), line: i });
+  });
+  return out;
+}
+
 /** Parse a stored body back into its fields. Throws on a missing required section. */
 export function parseBody(body: string): ParsedBody {
-  const files = parseList(sectionBody(body, 'Files'));
+  const filesSection = sectionBody(body, 'Files');
+  const files =
+    filesSection === null
+      ? null
+      : filesListItems(filesSection.split('\n')).map((i) => decodeFilesEntry(i.text));
   if (files === null) throw new Error('GitHub body missing required `## Files` section');
 
   const blockedRaw = sectionBody(body, 'Blocked by');
@@ -505,17 +607,6 @@ function sectionBody(body: string, name: string): string | null {
   const after = body.slice(m.index + m[0].length);
   const next = /^##\s+/m.exec(after);
   return next ? after.slice(0, next.index) : after;
-}
-
-/** Markdown list items (`- x`) → string[] (null if section absent). */
-function parseList(section: string | null): string[] | null {
-  if (section === null) return null;
-  const out: string[] = [];
-  for (const line of section.split('\n')) {
-    const m = /^[-*]\s+(.+)$/.exec(line.trim());
-    if (m) out.push(m[1].trim());
-  }
-  return out;
 }
 
 function parseAcs(section: string): { text: string; checked: boolean }[] {
