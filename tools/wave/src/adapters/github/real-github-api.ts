@@ -224,7 +224,7 @@ function saysAlreadyExists(json: unknown): boolean {
  */
 const REF_DELETE_ALREADY_GONE_MESSAGE = 'Reference does not exist';
 
-/** True when a 422 ref-delete body is GitHub's documented already-gone answer. */
+/** True when a 422 ref-delete body is GitHub's observed already-gone answer (not documented — see {@link REF_DELETE_ALREADY_GONE_MESSAGE}). */
 function refAlreadyGone(json: unknown): boolean {
   const message = (json as { message?: unknown } | null)?.message;
   return message === REF_DELETE_ALREADY_GONE_MESSAGE;
