@@ -159,14 +159,14 @@ Full derivation — the false-success shape this contract forecloses, why the te
   --out <consumer-root>/.flotilla/tmp/<slug>/driver.js \
   [--plugin-manifest <plugin-clone-root>/.claude-plugin/plugin.json] \
   [--reviewer-agent <name>] [--coordinator-branch <b>] [--deps-setup "<cmd>"] \
-  [--row-meta '{"<id>":{"prTitle":"…","reviewerHints":["…"],"note":"…"}}'] [--reviewer-only]
+  [--row-meta '{"<id>":{"prTitle":"…","reviewerHints":["…"],"note":"…"}}'] [--reviewer-only <id> ...]
 ```
 
 It writes the finished script to `--out` — the path the harness Workflow tool
 takes as its `scriptPath`, unchanged in shape — and prints ONE JSON receipt:
-the rows composed, each row's branch, model, iteration, risk, worker and
-grant-count, the anchor, the Reviewer agent name and how it was derived, the
-mode, the template path and its byte size. Read the receipt; do not re-derive any of it.
+the rows composed, each row's branch, model, iteration, risk, worker,
+grant-count and mode, the anchor, the Reviewer agent name and how it was derived,
+the compose's mode, the template path and its byte size. Read the receipt; do not re-derive any of it.
 
 **Keep `--out` inside the repo** — under the Scribe's gitignored `.flotilla/tmp/`,
 not in the `/tmp` scratch directory the run's other files use. Those files are
@@ -214,8 +214,10 @@ never a silent skip, grouped by grain and naming what each message states:**
 
 - `--spine`, `--out` or `--anchor` is missing; `--config` does not load; the
   wave config declares no `engine.cli` binding; or `--spine` does not read —
-  each naming the missing flag, path or binding (usage-level, exit 2).
-- no row in the spine is in a dispatchable state.
+  each naming the missing flag, path or binding (usage-level, exit 2); so is a
+  bare `--reviewer-only`, naming the `<id>` form.
+- no row in the spine is in a dispatchable state, or a `--reviewer-only` id
+  names a row that is not — each such id named with its state.
 - one or more rows carry no recorded `wave/<id>-<slug>` branch — naming every
   such row; run `spine set-branch` first.
 - an anchor that does not resolve is refused naming the SHA.
@@ -234,7 +236,7 @@ never a silent skip, grouped by grain and naming what each message states:**
 
 *Per-row* — always exit 1, naming the row:
 
-- under `--reviewer-only`, the row has no valid report sidecar at its current
+- a row named by `--reviewer-only` has no valid report sidecar at its current
   iteration — the file does not exist, or does not validate.
 - a row whose Worker is human-gated, or `foreground`, is refused with its own
   message and its own remedy.
@@ -253,12 +255,13 @@ disagree.
 
 **`--reviewer-only` is a mode the verb fills, never a copy anyone patches.**
 The re-review after an answered `reviewer-questions-blocking` (SKILL.md step 8)
-reads each row's report sidecar at its current iteration into the row as
+reads each NAMED row's report sidecar at its current iteration into the row as
 `reviewerOnlyReport`; the template's Stage 1 returns it instead of dispatching a
 Worker, and Stage 2 passes it through instead of re-writing it. Stage 3 (the
-schema-validated Reviewer) and Stage 4 (the verdict Scribe) are unchanged. Its
-own refusal — a missing or invalid sidecar, naming the row — is listed above;
-the receipt's `mode` says which round the script runs.
+schema-validated Reviewer) and Stage 4 (the verdict Scribe) are unchanged. Every
+row the flag does not name composes as an ordinary row in the same script. Its
+refusals are listed above; each receipt row's `mode` says which it is, and the
+top-level `mode` reads `full`, `reviewer-only` or `mixed`.
 
 ### `depsSetup` — five precedence levels, and one refusal
 

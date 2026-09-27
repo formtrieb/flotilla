@@ -380,11 +380,14 @@
  * receipt: the rows composed, the model and branch per row, the anchor, the
  * Reviewer agent name and how it was derived, the template and its size.
  *
- * `--reviewer-only` (issue #992) composes the re-review that follows an
- * answered `reviewer-questions-blocking`: each row carries its own report
- * sidecar at its current iteration, the script's Worker stage returns it
- * instead of dispatching a Worker, and its report Scribe stage is skipped. The
- * receipt's `mode` names which round the script runs.
+ * `--reviewer-only <id>` (issue #992; per-row since issue #1017, repeatable)
+ * composes the re-review that follows an answered `reviewer-questions-blocking`:
+ * each NAMED row carries its own report sidecar at its current iteration, the
+ * script's Worker stage returns it instead of dispatching a Worker, and its
+ * report Scribe stage is skipped; every other dispatchable row composes as an
+ * ordinary row in the same script. The bare switch is refused as usage. The
+ * receipt carries each row's `mode`, and the top-level `mode` reads `full`,
+ * `reviewer-only` or `mixed`.
  *
  * THE ENGINE STILL DISPATCHES NOTHING (ADR-0009). This verb writes a file; the
  * harness runs it; the schema-validated-return guarantee stays a property of
@@ -396,10 +399,12 @@
  *   0 — the script was written; the receipt is on stdout
  *   1 — a compose refusal (an unresolvable anchor, a human-gated or foreground
  *       row, a row with no recorded branch, an underivable Reviewer agent name,
- *       a missing required row field, or — under `--reviewer-only` — a row with
- *       no valid report sidecar at its iteration) or a store/domain failure
- *   2 — usage, an unreadable/invalid config, an unreadable spine, or a config
- *       with no `engine.cli` binding (a STOP — wave-setup has not finished)
+ *       a missing required row field, or — under `--reviewer-only <id>` — a
+ *       named row with no valid report sidecar at its iteration, or a named id
+ *       that is not a dispatchable row) or a store/domain failure
+ *   2 — usage (the bare `--reviewer-only` included), an unreadable/invalid
+ *       config, an unreadable spine, or a config with no `engine.cli` binding
+ *       (a STOP — wave-setup has not finished)
  *
  * route-tuple (issue #681) — performs the whole post-return write-ahead
  * sequence for ONE returned tuple and prints one JSON result, in place of the
@@ -419,7 +424,9 @@
  * one source no payload carries. **It never flags and never dispatches**: a
  * `stop` outcome is reported with its reason and performs no spine, host or
  * tracker write, and a re-dispatch writes the spine row state and the iteration
- * bump only.
+ * bump only. Nor does it clear a flag: landing a row whose tracker still reads
+ * `needs-attention` prints a `warning:` naming the row (issue #1017) and
+ * changes neither the writes nor the exit code.
  *
  * `--ruling "<the Operator's reason>"` admits the Operator-ruled, Reviewer-only
  * round that runs ABOVE the re-dispatch cap — the documented recovery from a

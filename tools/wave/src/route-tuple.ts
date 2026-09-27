@@ -34,6 +34,9 @@
  * **Nothing here dispatches, and nothing flags.** A `stop` outcome is REPORTED,
  * with its reason; the `issue-store flag` that follows it is the Coordinator's
  * separate act (start-mechanics step 8), and so is the re-dispatch itself.
+ * Nothing here CLEARS a flag either: a row landed while its tracker still reads
+ * `needs-attention` gets a `warning:` on stderr naming it, and nothing else —
+ * no write changes, and the exit code is the one the landing earned.
  *
  * ## The order, and the one place it is not "spine first"
  *
@@ -650,6 +653,23 @@ function divergentSidecarWarning(input: {
     '  missing = in the payload, not the sidecar; extra = in the sidecar, not the payload.\n' +
     `  The passed payload wins: ${JSON.stringify(path)} was rewritten from it through the\n` +
     '  renderer write-report/write-verdict use, and routing proceeds from it.\n'
+  );
+}
+
+/**
+ * The still-flagged warning (issue #1017): one `warning:` line naming the row,
+ * then what to do about it. Printed after a row lands at `pr-created` while its
+ * tracker still reads `needs-attention` — the shape a Reviewer-only re-review
+ * that approves leaves behind when the flag the step-8 STOP set was never
+ * cleared.
+ */
+function stillFlaggedWarning(id: string): string {
+  return (
+    `warning: route-tuple: row ${JSON.stringify(id)} landed at pr-created, but its tracker ` +
+    'status still reads needs-attention.\n' +
+    '  This verb never clears a flag. If the Operator has answered the question the flag\n' +
+    `  records, clear it (issue-store clear-flag ${id}) and read it back (issue-store read);\n` +
+    '  if a question is still open, leave it standing.\n'
   );
 }
 
@@ -1387,18 +1407,30 @@ async function finishApproved(input: {
   const store = await resolveStore(args, deps.store);
   const before = await store.read(id);
   let rungStatus: StepStatus;
+  let landedStatus: string;
   if (before.status === 'in-review' || before.status === 'done') {
     rungStatus = 'performed-before';
+    landedStatus = before.status;
     push('rung-transition', 'performed-before', { rung: 'in-review', trackerStatus: before.status });
   } else {
     await store.transition(id, 'in-review');
     const after = await store.read(id);
     rungStatus = 'performed';
+    landedStatus = after.status;
     push('rung-transition', 'performed', {
       from: before.status,
       rung: 'in-review',
       trackerStatus: after.status,
     });
+  }
+  // A row landed while the needs-attention flag is still up (issue #1017): the
+  // flag overlays the rung, so the tracker still reads `needs-attention` after
+  // the transition above. Warned, never cleared — clearing a flag is the
+  // Coordinator's act at the point the Operator answers (wave-start step 8), and
+  // a verb that cleared it here would also clear one a DIFFERENT, still-open
+  // question raised. No write changes and the exit code is unchanged.
+  if (landedStatus === 'needs-attention') {
+    process.stderr.write(stillFlaggedWarning(id));
   }
 
   printJson({

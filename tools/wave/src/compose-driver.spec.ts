@@ -2067,8 +2067,11 @@ describe('compose-driver — the verb, end to end', () => {
         // This config carries no `engine.install`, so the install-shaped
         // command in the row's own verify profile is what answered.
         depsSetupSource: 'verify',
+        // issue #1017 — the row's own mode; no --reviewer-only names it.
+        mode: 'full',
       },
     ]);
+    expect(receipt.mode).toBe('full');
 
     const script = readFileSync(out, 'utf8');
     expect(script).toContain(`const REPO_ROOT = ${JSON.stringify(repoRoot)}`);
@@ -4323,6 +4326,8 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     // deliberately adds nothing to it: a `siblings` key here would make the
     // change a public-API-change and pull in the verb-contract specs. Pinned as
     // the exact key list so a later "helpful" addition fails here first.
+    // (`mode` is the one deliberate addition since — issue #1017's per-row
+    // Reviewer-only mode, a declared public-API change.)
     const { spinePath, configPath } = await seed(AC1_ROWS);
     await compose(spinePath, configPath);
     const receipt = JSON.parse(stdout) as { rows: Array<Record<string, unknown>> };
@@ -4332,6 +4337,7 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
       'depsSetupSource',
       'id',
       'iteration',
+      'mode',
       'model',
       'risk',
       'scopeGrants',
@@ -4362,7 +4368,7 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     // …and the per-row key list is declared in the SAME order the emitter
     // builds it, so a reader of `--help` sees the object they will receive.
     expect(shape).toContain(
-      'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource } ]',
+      'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource, mode } ]',
     );
     // NEGATIVE CONTROL — the filter is not one that can only return [].
     expect(
@@ -4702,7 +4708,7 @@ describe('compose-driver --reviewer-only — the verb, end to end (issue #992)',
     const { id, spinePath, configPath } = await seed();
     const saved = savedReport(id, 'feedf00d');
     writeReportSidecar(id, 1, saved);
-    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(0);
+    expect(await compose(spinePath, configPath, '--reviewer-only', id)).toBe(0);
     expect(stderr).toBe('');
 
     const { calls, result } = await runComposedDriver(readFileSync(join(repoRoot, 'driver.js'), 'utf8'));
@@ -4716,15 +4722,19 @@ describe('compose-driver --reviewer-only — the verb, end to end (issue #992)',
     expect(calls[0].brief).toContain('the criterion, as the ruling rewrote it');
   });
 
-  it('AC4 — the receipt names the mode: `reviewer-only` with the flag, `full` without it', async () => {
+  it('AC4 — the receipt names the mode: `reviewer-only` with the row named, `full` without it — top level and per row', async () => {
     const { id, spinePath, configPath } = await seed();
     writeReportSidecar(id, 1, savedReport(id, 'feedf00d'));
-    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(0);
-    expect((JSON.parse(stdout) as Record<string, unknown>).mode).toBe('reviewer-only');
+    expect(await compose(spinePath, configPath, '--reviewer-only', id)).toBe(0);
+    const named = JSON.parse(stdout) as { mode: string; rows: Array<{ mode: string }> };
+    expect(named.mode).toBe('reviewer-only');
+    expect(named.rows.map((r) => r.mode)).toEqual(['reviewer-only']);
 
     stdout = '';
     expect(await compose(spinePath, configPath)).toBe(0);
-    expect((JSON.parse(stdout) as Record<string, unknown>).mode).toBe('full');
+    const plain = JSON.parse(stdout) as { mode: string; rows: Array<{ mode: string }> };
+    expect(plain.mode).toBe('full');
+    expect(plain.rows.map((r) => r.mode)).toEqual(['full']);
     // …and the ordinary compose carries no saved report even though one is on disk.
     const { calls } = await runComposedDriver(readFileSync(join(repoRoot, 'driver.js'), 'utf8'));
     expect(calls.map((c) => c.opts.label)).toEqual([`worker:${id}`, `scribe-report:${id}`, `review:${id}`, `scribe-verdict:${id}`]);
@@ -4735,7 +4745,7 @@ describe('compose-driver --reviewer-only — the verb, end to end (issue #992)',
     writeReportSidecar(id, 1, savedReport(id, 'aaaa1111'));
     writeReportSidecar(id, 2, savedReport(id, 'bbbb2222'));
     writeReportSidecar(id, 3, savedReport(id, 'cccc3333'));
-    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(0);
+    expect(await compose(spinePath, configPath, '--reviewer-only', id)).toBe(0);
     const { calls, result } = await runComposedDriver(readFileSync(join(repoRoot, 'driver.js'), 'utf8'));
     expect((result[0].report as { commitShas: string[] }).commitShas).toEqual(['bbbb2222']);
     expect(calls.find((c) => c.opts.label === `scribe-verdict:${id}`)!.brief).toContain(`--iter 2`);
@@ -4745,7 +4755,7 @@ describe('compose-driver --reviewer-only — the verb, end to end (issue #992)',
     const { id, spinePath, configPath } = await seed(2);
     // A sidecar at ANOTHER iteration is not one at this row's iteration.
     writeReportSidecar(id, 1, savedReport(id, 'aaaa1111'));
-    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(1);
+    expect(await compose(spinePath, configPath, '--reviewer-only', id)).toBe(1);
     expect(stdout).toBe('');
     expect(stderr).toContain(`--reviewer-only: row ${id} has no valid report sidecar at its iteration 2`);
     expect(stderr).toContain('does not exist');
@@ -4756,18 +4766,19 @@ describe('compose-driver --reviewer-only — the verb, end to end (issue #992)',
     const { id, spinePath, configPath } = await seed();
     const { commitShas: _drop, ...invalid } = savedReport(id, 'feedf00d');
     writeReportSidecar(id, 1, invalid);
-    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(1);
+    expect(await compose(spinePath, configPath, '--reviewer-only', id)).toBe(1);
     expect(stdout).toBe('');
     expect(stderr).toContain(`--reviewer-only: row ${id} has no valid report sidecar at its iteration 1`);
     expect(stderr).toContain('does not validate');
     expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
   });
 
-  it('AC4 — the Verb contract declares the switch, `--help` renders it, and the Catalog carries it', () => {
+  it('AC4 — the Verb contract declares the repeatable id flag, `--help` renders it, and the Catalog carries it', () => {
     const declared = COMPOSE_DRIVER_CONTRACT.flags.find((f) => f.canonical === '--reviewer-only');
     expect(declared).toBeDefined();
-    expect(declared?.value).toBe('none');
-    expect(COMPOSE_DRIVER_CONTRACT.usage.join('\n')).toContain('--reviewer-only');
+    expect(declared?.value).toBe('repeatable');
+    expect(declared?.valueType).toBe('id');
+    expect(COMPOSE_DRIVER_CONTRACT.usage.join('\n')).toContain('--reviewer-only <id>');
     expect(verbContracts()['compose-driver'].flags.map((f) => f.canonical)).toContain('--reviewer-only');
 
     expect(cliMain(['catalog'])).toBe(0);
@@ -4775,5 +4786,272 @@ describe('compose-driver --reviewer-only — the verb, end to end (issue #992)',
     const entry = catalog.verbs.find((v) => v.verb === 'compose-driver');
     expect(entry?.flags.map((f) => f.canonical)).toContain('--reviewer-only');
     expect(COMPOSE_DRIVER_CONTRACT.json?.shape).toMatch(/\bmode\b/);
+    expect(COMPOSE_DRIVER_CONTRACT.json?.shape).toContain('depsSetupSource, mode } ]');
+    expect(COMPOSE_DRIVER_CONTRACT.json?.trail).toContain('full | reviewer-only | mixed');
+  });
+});
+
+// ─── `--reviewer-only <id>`: per row, beside ordinary rows (issue #1017) ─────
+//
+// The flag used to be a switch over the whole compose: every dispatchable row
+// became Reviewer-only, so a re-review had to wait until no other row was
+// dispatchable, and a stopped sibling that happened to have a valid report on
+// disk was silently re-reviewed with it. It names rows now. Every claim below
+// is observed on a composed script run under the Workflow-tool stubs, or on
+// the verb's own exit code and stderr.
+
+describe('compose-driver --reviewer-only <id> — only the named rows, the rest ordinary (issue #1017)', () => {
+  let repoRoot: string;
+  let anchor: string;
+  let stdout: string;
+  let stderr: string;
+  let outSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const SLUG = '2026-09-27-reviewer-only-per-row';
+
+  function reportsDir(): string {
+    return join(repoRoot, '.flotilla', 'waves', SLUG, 'reports');
+  }
+
+  function writeReportSidecar(id: string, iter: number, payload: unknown): void {
+    mkdirSync(reportsDir(), { recursive: true });
+    writeFileSync(join(reportsDir(), `${id}-${iter}.md`), renderSidecarBody('WorkerReport', id, iter, payload), 'utf8');
+  }
+
+  interface SeedRow {
+    title: string;
+    hint: string;
+    state: Parameters<typeof setRowState>[2];
+    iter: number;
+  }
+
+  /** A spine with one row per entry, each with a recorded branch and model. */
+  async function seedRows(entries: SeedRow[]): Promise<{ ids: string[]; spinePath: string; configPath: string }> {
+    const store = new MarkdownFsStore({ repoRoot, slug: SLUG });
+    const ids: string[] = [];
+    for (const e of entries) {
+      ids.push(
+        await store.create({
+          title: e.title,
+          filingHint: e.hint,
+          risk: 'mechanical',
+          worker: 'background',
+          files: ['tools/wave/**'],
+          blockedBy: 'none',
+          acceptanceCriteria: [{ text: 'it holds', checked: false }],
+          bodySections: [{ heading: 'What to build', markdown: 'It.' }],
+        }),
+      );
+    }
+    let spine = renderSpine(
+      { slug: SLUG, description: 'ro', coordinator: 'c', model: 'm', created: '2026-09-27', lastUpdated: '2026-09-27' },
+      entries.map((e, i) => ({ id: ids[i], title: e.title, worker: 'background', risk: 'mechanical' })),
+      { issues: [], cells: [] },
+      'ok',
+    );
+    entries.forEach((e, i) => {
+      spine = setRowState(spine, ids[i], e.state);
+      if (e.iter > 1) spine = setRowIter(spine, ids[i], e.iter);
+      spine = upsertDispatchLogEntry(spine, ids[i], `wave/${ids[i]}-${e.hint}`);
+      spine = upsertDispatchLogModel(spine, ids[i], 'sonnet');
+    });
+    const spinePath = join(repoRoot, '.flotilla', 'waves', `${SLUG}.md`);
+    mkdirSync(join(repoRoot, '.flotilla', 'waves'), { recursive: true });
+    writeFileSync(spinePath, spine, 'utf8');
+    const configPath = join(repoRoot, 'wave.config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        store: { kind: 'markdown', repoRoot, slug: SLUG },
+        engine: { cli: SOURCE_FORM_CLI, install: 'npm ci --prefix tools/wave' },
+      }),
+      'utf8',
+    );
+    return { ids, spinePath, configPath };
+  }
+
+  function compose(spinePath: string, configPath: string, ...extra: string[]): Promise<number> {
+    return runComposeDriver([
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', join(repoRoot, 'driver.js'),
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+      ...extra,
+    ]);
+  }
+
+  type Receipt = { mode: string; rows: Array<{ id: string; mode: string }> };
+  const receipt = (): Receipt => JSON.parse(stdout) as Receipt;
+  const composed = (): string => readFileSync(join(repoRoot, 'driver.js'), 'utf8');
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'compose-driver-ro-row-'));
+    execFileSync('git', ['-C', repoRoot, 'init', '-q']);
+    execFileSync('git', [
+      '-C', repoRoot, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t',
+      'commit', '--allow-empty', '-q', '-m', 'anchor',
+    ]);
+    anchor = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    stdout = '';
+    stderr = '';
+    outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((c: string | Uint8Array) => {
+      stdout += String(c);
+      return true;
+    });
+    errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((c: string | Uint8Array) => {
+      stderr += String(c);
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    outSpy.mockRestore();
+    errSpy.mockRestore();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('AC1 — the named row carries its saved report while a sibling at a NEW iteration composes an ordinary Worker round in the same script', async () => {
+    const { ids, spinePath, configPath } = await seedRows([
+      { title: 'Answered row', hint: 'answered', state: 'dispatched', iter: 1 },
+      { title: 'Re-dispatched sibling', hint: 'sibling', state: 're-dispatched', iter: 2 },
+    ]);
+    const [named, sibling] = ids;
+    const saved = savedReport(named, 'feedf00d');
+    writeReportSidecar(named, 1, saved);
+    // The sibling's OLD report — at iteration 1, not at its current 2. Under the
+    // compose-wide switch this row was refused by name; un-named, it is never read.
+    writeReportSidecar(sibling, 1, savedReport(sibling, 'aaaa1111'));
+
+    expect(await compose(spinePath, configPath, '--reviewer-only', named)).toBe(0);
+    expect(stderr).toBe('');
+    expect(receipt().mode).toBe('mixed');
+    expect(receipt().rows.map((r) => [r.id, r.mode])).toEqual([
+      [named, 'reviewer-only'],
+      [sibling, 'full'],
+    ]);
+
+    const { calls, result } = await runComposedDriver(composed());
+    const labels = calls.map((c) => String(c.opts.label));
+    expect(labels.filter((l) => l.endsWith(`:${named}`))).toEqual([`review:${named}`, `scribe-verdict:${named}`]);
+    expect(labels.filter((l) => l.endsWith(`:${sibling}`))).toEqual([
+      `worker:${sibling}`,
+      `scribe-report:${sibling}`,
+      `review:${sibling}`,
+      `scribe-verdict:${sibling}`,
+    ]);
+    expect(calls.filter((c) => c.opts.isolation === 'worktree').map((c) => c.opts.label)).toEqual([`worker:${sibling}`]);
+    expect(result.find((t) => t.id === named)!.report).toEqual(saved);
+    expect(result.find((t) => t.id === sibling)!.report).not.toEqual(savedReport(sibling, 'aaaa1111'));
+    expect(result.find((t) => t.id === sibling)!.iteration).toBe(2);
+  });
+
+  it('AC5 — NEGATIVE CONTROL: an un-named stopped sibling WITH a valid report at its iteration is NOT composed Reviewer-only', async () => {
+    const { ids, spinePath, configPath } = await seedRows([
+      { title: 'Answered row', hint: 'answered', state: 'dispatched', iter: 1 },
+      { title: 'Stopped sibling', hint: 'stopped', state: 'dispatched', iter: 1 },
+    ]);
+    const [named, stopped] = ids;
+    writeReportSidecar(named, 1, savedReport(named, 'feedf00d'));
+    // Exactly the input the compose-wide switch swept up: a valid report AT the
+    // row's own iteration. Only naming makes a row Reviewer-only now.
+    writeReportSidecar(stopped, 1, savedReport(stopped, 'bbbb2222'));
+
+    expect(await compose(spinePath, configPath, '--reviewer-only', named)).toBe(0);
+    expect(receipt().mode).toBe('mixed');
+    expect(receipt().rows.find((r) => r.id === stopped)!.mode).toBe('full');
+    const { calls, logs } = await runComposedDriver(composed());
+    expect(calls.map((c) => String(c.opts.label)).filter((l) => l.endsWith(`:${stopped}`))).toEqual([
+      `worker:${stopped}`,
+      `scribe-report:${stopped}`,
+      `review:${stopped}`,
+      `scribe-verdict:${stopped}`,
+    ]);
+    expect(logs.some((l) => l.startsWith(`REVIEWER-ONLY ${stopped}:`))).toBe(false);
+    expect(calls.find((c) => c.opts.label === `review:${stopped}`)!.brief).not.toContain('bbbb2222');
+
+    // CONTROL — the same spine with BOTH rows named re-reviews both, so the
+    // sibling's report above really was reviewable; it was the naming that kept it out.
+    stdout = '';
+    expect(await compose(spinePath, configPath, '--reviewer-only', named, '--reviewer-only', stopped)).toBe(0);
+    expect(receipt().mode).toBe('reviewer-only');
+    const both = await runComposedDriver(composed());
+    expect(both.calls.some((c) => String(c.opts.label).startsWith('worker:'))).toBe(false);
+    expect(both.calls.find((c) => c.opts.label === `review:${stopped}`)!.brief).toContain('bbbb2222');
+  });
+
+  it('AC2 — a named row with no valid report at its iteration is refused, exit 1, naming THAT row — and nothing is written', async () => {
+    const { ids, spinePath, configPath } = await seedRows([
+      { title: 'Answered row', hint: 'answered', state: 'dispatched', iter: 1 },
+      { title: 'Re-dispatched sibling', hint: 'sibling', state: 're-dispatched', iter: 2 },
+    ]);
+    const [named, sibling] = ids;
+    writeReportSidecar(named, 1, savedReport(named, 'feedf00d'));
+    writeReportSidecar(sibling, 1, savedReport(sibling, 'aaaa1111'));
+    expect(await compose(spinePath, configPath, '--reviewer-only', named, '--reviewer-only', sibling)).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`--reviewer-only: row ${sibling} has no valid report sidecar at its iteration 2`);
+    expect(stderr).not.toContain(`row ${named} has no valid report`);
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+  });
+
+  it('AC3 — an id that is not a dispatchable row is refused, exit 1, naming the id and why', async () => {
+    const { ids, spinePath, configPath } = await seedRows([
+      { title: 'Answered row', hint: 'answered', state: 'dispatched', iter: 1 },
+      { title: 'Landed sibling', hint: 'landed', state: 'pr-created', iter: 1 },
+    ]);
+    const [named, landed] = ids;
+    writeReportSidecar(named, 1, savedReport(named, 'feedf00d'));
+    writeReportSidecar(landed, 1, savedReport(landed, 'cccc3333'));
+
+    expect(await compose(spinePath, configPath, '--reviewer-only', landed)).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`--reviewer-only names ${landed} (state pr-created)`);
+    expect(stderr).toContain('not a row in a dispatchable state');
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+
+    stderr = '';
+    expect(await compose(spinePath, configPath, '--reviewer-only', named, '--reviewer-only', 'no-such-row')).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('--reviewer-only names no-such-row (no such row in the spine)');
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+  });
+
+  it('AC4 — the BARE flag is refused as usage, exit 2, and the message shows the id form — trailing or followed by another flag', async () => {
+    const { ids, spinePath, configPath } = await seedRows([
+      { title: 'Answered row', hint: 'answered', state: 'dispatched', iter: 1 },
+    ]);
+    writeReportSidecar(ids[0], 1, savedReport(ids[0], 'feedf00d'));
+
+    expect(await compose(spinePath, configPath, '--reviewer-only')).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr.split('\n')[0]).toContain('--reviewer-only takes a row id');
+    expect(stderr.split('\n')[0]).toContain('`--reviewer-only <id>`');
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+
+    // Followed by another flag, the bare switch must not swallow that flag as its "id".
+    stderr = '';
+    const code = await runComposeDriver([
+      '--reviewer-only',
+      '--spine', spinePath,
+      '--config', configPath,
+      '--repo-root', repoRoot,
+      '--anchor', anchor,
+      '--out', join(repoRoot, 'driver.js'),
+      '--reviewer-agent', 'flotilla:wave-reviewer',
+    ]);
+    expect(code).toBe(2);
+    expect(stderr.split('\n')[0]).toContain('--reviewer-only takes a row id');
+    expect(existsSync(join(repoRoot, 'driver.js'))).toBe(false);
+  });
+
+  it('a flag VALUE that spells the switch is a value, never the switch', async () => {
+    const { spinePath, configPath } = await seedRows([
+      { title: 'Answered row', hint: 'answered', state: 'dispatched', iter: 1 },
+    ]);
+    expect(await compose(spinePath, configPath, '--deps-setup', '--reviewer-only')).toBe(0);
+    expect(receipt().mode).toBe('full');
   });
 });

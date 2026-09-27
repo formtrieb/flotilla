@@ -373,14 +373,15 @@ fi
 #                                    belongs in `engine.install`, not on this
 #                                    flag (ADR-0032 amendment 2026-09-04).
 #     --repo-root / --template / --reports-dir / --verdicts-dir
-#     --reviewer-only                the re-review after an answered question
-#                                    (§8) — no Worker; never on a fresh round
+#     --reviewer-only <id>           repeatable: the re-review of THAT row after
+#                                    an answered question (§8) — no Worker for
+#                                    it; never on a fresh round
 #   exit 0 → ONE JSON receipt on stdout. READ IT — it is the dispatch record:
 #            { out, template, templateBytes, wave, anchor, reviewerAgent,
 #              reviewerAgentForm, pluginName, waveCli, scribeModel,
-#              mode: full | reviewer-only,
+#              mode: full | reviewer-only | mixed,
 #              rows: [{ id, slug, branch, model, iteration, risk, worker,
-#                       scopeGrants, depsSetupSource }] }
+#                       scopeGrants, depsSetupSource, mode }] }
 #            Confirm the row set matches the DISPATCHABLE rows (both HELD_IDS
 #            and the HUMAN-HELD ids must be absent), the per-row branch matches
 #            the `spine set-branch` write of step 5, and `reviewerAgent` is the
@@ -398,10 +399,11 @@ fi
 #            agent name, or a row with NO install step from any source on a repo
 #            that gitignores the path `engine.cli` resolves through (fix at
 #            setup: record `engine.install`; ADR-0032 amendment 2026-09-04),
-#            or, under --reviewer-only, a row with no valid report sidecar at
-#            its iteration.
+#            or a --reviewer-only id that is not a dispatchable row or has no
+#            valid report sidecar at its iteration.
 #            STOP and fix the named cause — never re-run past it.
-#   exit 2 → usage, an unreadable spine/config, or a config with no `engine.cli`
+#   exit 2 → usage (a bare --reviewer-only included), an unreadable
+#            spine/config, or a config with no `engine.cli`
 #            (a STOP: wave-setup has not finished in this repo, ADR-0032).
 #
 #    Then hand `--out` to the harness Workflow tool as its `scriptPath`.
@@ -810,22 +812,29 @@ git -C "$REPO" worktree remove "$PROBE"   # $PROBE: the stamped path, ends -i<it
 #   edit behind: read `git -C "$PROBE" status --porcelain`, then add --force —
 #   a probe holds only that Reviewer's experiment, never branch work.
 #   AN ANSWERED reviewer-questions-blocking (SKILL.md step 8, four steps):
-#   disclosures for the question and the ruling, the ticket's ONE criterion
-#   rewritten if the answer changes its reading (never a reviewerHint), the
-#   probe removed as above, then the Reviewer-only round at the SAME iteration:
+#   disclosures for the question and the ruling first. The moment the Operator
+#   answers, clear the flag the STOP set, and read it back — `clear-flag` is
+#   silent too (#648), so the read is the verification:
+{{wave-cli}} issue-store clear-flag "$ID"
+{{wave-cli}} issue-store read "$ID"        # status: the rung, not needs-attention
+#   A re-review that STOPs again is flagged again (above). route-tuple never
+#   clears a flag; landing a row still flagged prints a `warning:` naming it.
+#   Then the ticket's ONE criterion rewritten if the answer changes its reading
+#   (never a reviewerHint), the probe removed as above, then the Reviewer-only
+#   round at the SAME iteration:
 {{wave-cli}} compose-driver \
   --spine "$SPINE" --config "$WAVE_CONFIG" \
   --anchor "$ANCHOR_SHA" \
   --out "$REPO/.flotilla/tmp/$SLUG/driver.js" \
-  --reviewer-only
-#   Every row this compose picks up is Reviewer-only: its Worker stage returns
-#   the row's report sidecar at its Iter instead of dispatching, and its report
-#   Scribe is skipped; the Reviewer and verdict Scribe run as ever (the verdict
-#   sidecar is overwritten at that iteration). So compose it while no other
-#   row is dispatchable — a re-dispatched row awaiting its Worker has no report
-#   at its new Iter and is refused by name. Receipt `mode: reviewer-only`;
-#   exit 1 names a row with no valid report sidecar. Dispatch, then route the
-#   tuple with route-tuple at that same --iter (step 7a).
+  --reviewer-only "$ID"
+#   Only the named row is Reviewer-only (repeat the flag per answered row): its
+#   Worker stage returns its report sidecar at its Iter instead of dispatching,
+#   and its report Scribe is skipped; the Reviewer and verdict Scribe run as
+#   ever (the verdict sidecar is overwritten at that iteration). Every other
+#   dispatchable row composes as an ordinary row in the same script. Receipt:
+#   each row's `mode`, top-level `reviewer-only` or `mixed`; exit 1 names a
+#   named row with no valid report sidecar, or an id that is not dispatchable.
+#   Dispatch, then route the tuple with route-tuple at that same --iter (7a).
 
 # 8a. OPTIONAL Coordinator disposition of a `terminal-failure` STOP — park instead
 #     of abandoning (ADR-0022 §Consequences). The stopped row is still live
