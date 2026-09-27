@@ -4994,4 +4994,79 @@ describe('skill-schema-drift — the stamped probe: every naming-rule copy pinne
       expect(probeCleanGaps(reverted)).not.toEqual([]);
     },
   );
+
+  // ─── 3. every Reviewer checkout is the stamped probe (issue #1039) ────────
+  //
+  // Two Reviewers in one wave re-ran the verify gate in a plain, unstamped
+  // `git worktree add` checkout the probe sweep could not see. Check 1 now says
+  // where the re-run runs, and each probe licence says the stamp covers every
+  // checkout the Reviewer creates, not only an outcome experiment.
+
+  /** The agent definition's Check 1. */
+  const agentCheck1 = (): string =>
+    contractRegion(reviewerAgentMd, 'wave-reviewer.md agent definition', '### 1. Verify re-run', '### 2.');
+  /** The checks reference's Check 1. */
+  const checksCheck1 = (): string =>
+    contractRegion(reviewerChecksMd, 'reviewer-checks.md', '## Check 1 —', '## Check 2 —');
+  /** The packaged reviewerBrief's verify-location paragraph. */
+  const briefVerifyWhere = (): string =>
+    contractRegion(driverJs, 'driver/wave-start-inflight.js', '**Where the verify re-run runs:**', '**SIBLING MERGE-TREE PREDICTION');
+
+  /** Every missing part of the verify-location rule in `text`; `[]` when it holds. */
+  function verifyWhereGaps(text: string): string[] {
+    const t = text.replace(/\\`/g, '`').replace(/\s+/g, ' ');
+    const gaps: string[] = [];
+    if (!/dispatch working tree only if (?:it|that tree) already sits at the (?:confirmed )?`refs\/review\/[^`]+` SHA/.test(t)) gaps.push('dispatch-tree-only-at-sha');
+    if (!/otherwise in your stamped probe/.test(t)) gaps.push('else-stamped-probe');
+    if (!/(?:no other checkout|never in any other checkout)/.test(t)) gaps.push('no-other-checkout');
+    return gaps;
+  }
+
+  const VERIFY_WHERE_COPIES = [
+    ['the packaged reviewerBrief', briefVerifyWhere],
+    ['wave-reviewer.md agent definition Check 1', agentCheck1],
+    ['reviewer-checks.md Check 1', checksCheck1],
+  ] as const;
+
+  it.each(VERIFY_WHERE_COPIES)('%s says the verify re-run runs in the stamped probe, or the dispatch tree only at the reviewed SHA, and nowhere else', (_label, region) => {
+    expect(verifyWhereGaps(region())).toEqual([]);
+  });
+
+  it.each(VERIFY_WHERE_COPIES)('NEGATIVE CONTROL — the verify-location predicate FAILS on the %s with the rule cut out', (_label, region) => {
+    const text = region();
+    const reverted = text.replace(/dispatch working tree only if[\s\S]*?checkout/, '');
+    expect(reverted).not.toEqual(text);
+    expect(verifyWhereGaps(reverted)).not.toEqual([]);
+  });
+
+  /** The retired framing: the licence as an outcome-experiment-only checkout. */
+  const RETIRED_OUTCOME_ONLY = 'lets you exercise an outcome in a detached checkout';
+
+  const LICENCE_COPIES = [
+    ['the packaged reviewerBrief', briefProbeParagraph],
+    ['wave-reviewer.md agent definition', agentProbeLicense],
+    ['wave-reviewer/SKILL.md', skillProbeLicense],
+  ] as const;
+
+  it.each(LICENCE_COPIES)('%s says the stamp covers every Reviewer-created checkout, a verify re-run included', (_label, region) => {
+    const t = region().replace(/\s+/g, ' ');
+    expect(t).toMatch(/every (?:detached )?checkout/i);
+    expect(t).toMatch(/verify re-run/);
+    expect(t).not.toContain(RETIRED_OUTCOME_ONLY);
+  });
+
+  it('no Reviewer text frames the probe licence as for outcome experiments only', () => {
+    for (const text of [driverJs, reviewerAgentMd, reviewerSkillMd, reviewerChecksMd]) {
+      expect(text.replace(/\s+/g, ' ')).not.toContain(RETIRED_OUTCOME_ONLY);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the brief\'s licence reverted to its outcome-only wording is caught', () => {
+    const text = briefProbeParagraph();
+    const current = 'covers every detached checkout of your own — a verify\nre-run and an outcome experiment alike:';
+    expect(text).toContain(current);
+    const reverted = text.split(current).join('lets you exercise an outcome in a detached checkout of your\nown:').replace(/\s+/g, ' ');
+    expect(reverted).not.toMatch(/every (?:detached )?checkout/i);
+    expect(reverted).toContain(RETIRED_OUTCOME_ONLY);
+  });
 });

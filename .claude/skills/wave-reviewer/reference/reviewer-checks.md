@@ -39,7 +39,7 @@ git diff "$ANCHOR".."refs/review/$ROW"                 # the actual change
 
 ## Check 1 — verify re-run
 
-Run the same verify commands the VerifyGate selected for the changed files (the consumer's `wave.config.json` `verify` profile — e.g. `composer install` + `vendor/bin/phpunit` for a PHP CMS consumer, or `npm test` + `npm run lint` for a node consumer). Report exact counts; a disagreement with the Worker report is `changes-requested`. Capture into `lintTestSummary`.
+Run the same verify commands the VerifyGate selected for the changed files (the consumer's `wave.config.json` `verify` profile — e.g. `composer install` + `vendor/bin/phpunit` for a PHP CMS consumer, or `npm test` + `npm run lint` for a node consumer). Report exact counts; a disagreement with the Worker report is `changes-requested`. Capture into `lintTestSummary`. Run it in your dispatch working tree only if that tree already sits at the confirmed `refs/review/<id>` SHA; otherwise in your stamped probe (Check 3) checked out at that SHA — never in any other checkout.
 
 **If `wave.config.verify` is absent (no verify profile), this step is empty.** Note `"no verify profile"` in `lintTestSummary` and proceed — a verify-less config is valid.
 
