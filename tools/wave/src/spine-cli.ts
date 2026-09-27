@@ -37,6 +37,11 @@
  *                     validated against ROW_STATES at this CLI boundary (the
  *                     spine writer writes any string verbatim, so an unchecked
  *                     typo would silently corrupt durable state — "fail loud").
+ *                     A `parked` target is the one case that reads the row's
+ *                     CURRENT state first: unless it is in PARKABLE_FROM
+ *                     (`planned`, `failed`) the op exits 2 with nothing written
+ *                     (ADR-0022 decision 1). Every other target is a raw
+ *                     recovery write with no source-state read.
  *   set-row-iter      setRowIter(id, n) then flush — bumps the Plan-Table
  *                     `Iter` cell and re-renders the `Reports → Verdicts`
  *                     sidecar-link cell to the <id>-<n> paths (FOR-53,
@@ -203,8 +208,9 @@
  *       Both are "not clear": the gate is fail-closed, so an unreadable or
  *       corrupt spine blocks the archive exactly like an open disclosure does.
  *   2 — usage error (missing op/path/args, unknown op, bad state token, or a
- *       non-positive-integer `set-row-iter` / `add-disclosure --iter` <n>) or
- *       body-file read error
+ *       non-positive-integer `set-row-iter` / `add-disclosure --iter` <n>),
+ *       body-file read error, or a `set-row-state <id> parked` whose row is not
+ *       in `planned` / `failed` (the park-entry guard; nothing is written)
  */
 
 import {
@@ -239,6 +245,7 @@ import {
   type ConflictMap,
 } from './wave-md-rw';
 import { flag, printJson } from './cli-utils';
+import { canPark, PARKABLE_FROM, type IssueState } from './stop-condition-state-machine';
 import {
   defineVerb,
   hasFlag,
@@ -479,6 +486,12 @@ const SPINE_OP_SHAPES: Readonly<Record<string, Omit<VerbContractDeclaration, 've
     positionals: fixed('<spine-path>', '<id>', '<state>'),
     output: 'silent-write',
     flags: [],
+    // The one source-state read this op makes (ADR-0022 decision 1). Rendered
+    // into the op's usage section, so `--help` and every refusal show it.
+    notes: [
+      `  <state> parked is refused (exit 2, nothing written) unless the row is ${PARKABLE_FROM.join(' or ')};`,
+      '  every other <state> is written as given.',
+    ],
   },
   'set-row-iter': {
     positionals: fixed('<spine-path>', '<id>', '<n>'),
@@ -1075,7 +1088,27 @@ export function runSpine(
         );
         return 2;
       }
-      apply = (store) => store.setRowState(id, state as RowState);
+      // The park-entry guard (ADR-0022 decision 1, Operator ruling 2026-09-27).
+      // ONLY a `parked` target reads the row's current state; every other
+      // target stays the raw recovery writer it always was — no source-state
+      // read, no new refusal. No override flag: a live row resolves through
+      // its stop path to `failed` first, then parks.
+      //
+      // The check runs inside `apply` because that is where the store (and so
+      // the row's current state) exists; it throws a {@link ParkRefusal}, which
+      // the catch below turns into exit 2 — BEFORE `flush`, so nothing is
+      // written. An id that names no row (`rowState` → null) is left to
+      // `setRowState`, which throws exactly as it does today (exit 1).
+      apply =
+        state === 'parked'
+          ? (store) => {
+              const current = store.rowState(id);
+              if (current !== null && !canPark(current as IssueState)) {
+                throw new ParkRefusal(id, current);
+              }
+              store.setRowState(id, state);
+            }
+          : (store) => store.setRowState(id, state as RowState);
       receipt = { id, written: { state } };
       break;
     }
@@ -1282,7 +1315,26 @@ export function runSpine(
     return 0;
   } catch (err) {
     process.stderr.write(`error: ${(err as Error).message ?? String(err)}\n`);
-    return 1;
+    // The park-entry refusal is a caller error the spine can show, not a
+    // domain failure of the writer — exit 2, like the state-token check.
+    return err instanceof ParkRefusal ? 2 : 1;
+  }
+}
+
+/**
+ * The `set-row-state <id> parked` refusal (ADR-0022 decision 1): the row's
+ * current state is not in {@link PARKABLE_FROM}. Thrown from inside the op's
+ * `apply` — before the flush, so the spine is left byte-identical — and mapped
+ * to exit 2 by {@link runSpine}'s catch. The message names the row, its current
+ * state, the legal sources, and the remedy.
+ */
+class ParkRefusal extends Error {
+  constructor(id: string, current: string) {
+    super(
+      `cannot park row "${id}" from state "${current}"; parked may only be entered from: ` +
+        `${PARKABLE_FROM.join(', ')}. Resolve the row through its stop path to "failed" first, then park.`,
+    );
+    this.name = 'ParkRefusal';
   }
 }
 

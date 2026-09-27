@@ -16,6 +16,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   ISSUE_STATES,
   WAVE_EVENTS,
@@ -550,7 +552,18 @@ describe('parked — the claim-releasing terminal (ADR-0022)', () => {
   // ADR-0022 §Decisions 1: "Entry edges: exactly two — planned → parked and
   // failed → parked." Parking is Coordinator-set, not event-emitted (§5), so no
   // WaveEvent carries the edge — `canPark` is the machine-checkable home of the
-  // rule that the skills' scripted disposition consults.
+  // rule, and `spine set-row-state` is the verb that consults it on a `parked`
+  // target (spine-cli.spec.ts pins the refusal end to end).
+  it('the PARKABLE_FROM docblock names its real production caller, not a consultation that does not happen', () => {
+    const src = readFileSync(join(__dirname, 'stop-condition-state-machine.ts'), 'utf-8');
+    const start = src.indexOf('The **only** legal entry edges into `parked`');
+    const end = src.indexOf('export const PARKABLE_FROM');
+    expect(start).toBeGreaterThan(-1);
+    const doc = src.slice(start, end);
+    expect(doc).toContain('`spine set-row-state` verb');
+    expect(doc).not.toMatch(/scripted dispositions[\s\S]*consult/);
+  });
+
   it('admits entry from EXACTLY planned and failed', () => {
     expect([...PARKABLE_FROM].sort()).toEqual(['failed', 'planned']);
   });

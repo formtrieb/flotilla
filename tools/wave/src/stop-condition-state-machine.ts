@@ -45,8 +45,8 @@ export const ISSUE_STATES = [
   // `parked` = terminal + silence. It is the only state that holds NO claim —
   // `coarse('parked')` is `null`, executed as `unclaim()` on the write path.
   // Set by the Coordinator (`spine set-row-state` + `unclaim`), never by an
-  // event: no `WaveEvent` enters it (see {@link PARKABLE_FROM}) and from it
-  // every event is invalid.
+  // event: no `WaveEvent` enters it (see {@link PARKABLE_FROM}, whose guard
+  // that verb consults) and from it every event is invalid.
   'parked',
 ] as const;
 
@@ -58,9 +58,15 @@ export type IssueState = (typeof ISSUE_STATES)[number];
  *
  * Parking is Coordinator-set rather than event-emitted (§Decisions 5), so no
  * `WaveEvent` carries the edge and {@link transition} cannot express it. This
- * const + {@link canPark} are therefore the machine-checkable home of the rule —
- * the guard the scripted dispositions (wave-start's membership resolution, the
- * STOP menu) consult before writing the state.
+ * const + {@link canPark} are therefore the machine-checkable home of the rule.
+ *
+ * Its production caller is the `spine set-row-state` verb (`spine-cli.ts`):
+ * every park the skills write goes through that verb, and when — and only
+ * when — the target state is `parked`, the verb reads the row's current state
+ * and consults `canPark` before writing, refusing with exit 2 and nothing
+ * written when the source is not in this list. The skills themselves do not
+ * call it; they reach it through the verb. Every other target state stays a raw
+ * recovery write with no source-state read (Operator ruling 2026-09-27).
  *
  * A **live** row (`dispatched`/`report-in`/`reviewing`/`verdict-in`/
  * `re-dispatched`/`approved`/`pr-created`) is deliberately excluded: it first

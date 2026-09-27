@@ -7,7 +7,7 @@ import { runSpine, SPINE_CONTRACTS } from './spine-cli';
 // The router, imported to pin that its `spine` case is the ONE dispatch path
 // this module's ops now flow through (issue #77).
 import { main } from './cli';
-import { readSpine, HUMAN_GATED_WORKER } from './wave-md-rw';
+import { readSpine, HUMAN_GATED_WORKER, ROW_STATES } from './wave-md-rw';
 import {
   readDisclosures,
   WAVE_SCOPE_ITER_CELL,
@@ -144,6 +144,103 @@ describe('spine-cli — runSpine', () => {
     const code = runSpine(['set-row-state', path, '99', NEW_STATE]);
     expect(code).toBe(1);
     expect(stderrSpy).toHaveBeenCalled();
+  });
+
+  // ── The park-entry guard (ADR-0022 decision 1, Operator ruling 2026-09-27) ──
+  // `parked` may only be entered from `planned` or `failed`; the verb consults
+  // `canPark` for a `parked` target and for nothing else.
+  describe('set-row-state <id> parked — the park-entry guard', () => {
+    /** A spine whose row ROW_ID sits at `from` (raw recovery write, unguarded). */
+    function spineAt(from: string): string {
+      const path = writeTmpSpine();
+      if (from !== 'planned') {
+        expect(runSpine(['set-row-state', path, ROW_ID, from])).toBe(0);
+      }
+      expect(readSpine(readFileSync(path, 'utf-8')).planTable.find((r) => r.id === ROW_ID)?.state).toBe(from);
+      stderrSpy.mockClear();
+      return path;
+    }
+
+    function stderrText(): string {
+      return stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('');
+    }
+
+    for (const from of ['planned', 'failed']) {
+      it(`parks a row in ${from}: exit 0, the State cell reads parked`, () => {
+        const path = spineAt(from);
+        expect(runSpine(['set-row-state', path, ROW_ID, 'parked'])).toBe(0);
+        const row = readSpine(readFileSync(path, 'utf-8')).planTable.find((r) => r.id === ROW_ID);
+        expect(row?.state).toBe('parked');
+        expect(stderrSpy).not.toHaveBeenCalled();
+      });
+    }
+
+    const REFUSED_FROM = [
+      // the seven live states
+      'dispatched',
+      'report-in',
+      'reviewing',
+      'verdict-in',
+      're-dispatched',
+      'approved',
+      'pr-created',
+      // the other terminal, and parked itself (no re-park)
+      'abandoned',
+      'parked',
+    ];
+
+    for (const from of REFUSED_FROM) {
+      it(`refuses to park a row in ${from}: exit 2, spine byte-identical, stderr names the state and the legal sources`, () => {
+        const path = spineAt(from);
+        const before = readFileSync(path, 'utf-8');
+        expect(runSpine(['set-row-state', path, ROW_ID, 'parked'])).toBe(2);
+        expect(readFileSync(path, 'utf-8')).toBe(before);
+        const err = stderrText();
+        expect(err).toContain(`"${ROW_ID}"`);
+        expect(err).toContain(`from state "${from}"`);
+        expect(err).toContain('planned, failed');
+        expect(err).toContain('"failed" first, then park');
+        // Refused under `--json` too — and no receipt is printed for a write
+        // that never happened.
+        stdoutSpy.mockClear();
+        expect(runSpine(['set-row-state', path, ROW_ID, 'parked', '--json'])).toBe(2);
+        expect(stdoutSpy).not.toHaveBeenCalled();
+        expect(readFileSync(path, 'utf-8')).toBe(before);
+      });
+    }
+
+    it('the guard lists exactly the nine non-parkable states — the partition is complete', () => {
+      expect([...REFUSED_FROM, 'planned', 'failed'].sort()).toEqual([...ROW_STATES].sort());
+    });
+
+    it('a non-parked target from a live state is still a raw write (verdict-in → failed)', () => {
+      const path = spineAt('verdict-in');
+      expect(runSpine(['set-row-state', path, ROW_ID, 'failed'])).toBe(0);
+      const row = readSpine(readFileSync(path, 'utf-8')).planTable.find((r) => r.id === ROW_ID);
+      expect(row?.state).toBe('failed');
+      expect(stderrSpy).not.toHaveBeenCalled();
+    });
+
+    it('the resolve-then-park remedy the refusal names works: verdict-in → failed → parked', () => {
+      const path = spineAt('verdict-in');
+      expect(runSpine(['set-row-state', path, ROW_ID, 'parked'])).toBe(2);
+      expect(runSpine(['set-row-state', path, ROW_ID, 'failed'])).toBe(0);
+      expect(runSpine(['set-row-state', path, ROW_ID, 'parked'])).toBe(0);
+      const row = readSpine(readFileSync(path, 'utf-8')).planTable.find((r) => r.id === ROW_ID);
+      expect(row?.state).toBe('parked');
+    });
+
+    it('an id that names no row keeps today\'s answer (exit 1) for a parked target', () => {
+      const path = writeTmpSpine();
+      const before = readFileSync(path, 'utf-8');
+      expect(runSpine(['set-row-state', path, '99', 'parked'])).toBe(1);
+      expect(readFileSync(path, 'utf-8')).toBe(before);
+    });
+
+    it('the op\'s usage section names the park refusal', () => {
+      const usage = SPINE_CONTRACTS['set-row-state'].usage.join('\n');
+      expect(usage).toContain('parked is refused (exit 2, nothing written) unless the row is planned or failed');
+    });
   });
 
   it('create renders a fresh, parseable spine to the out path', () => {
