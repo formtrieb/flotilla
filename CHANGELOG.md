@@ -9,6 +9,46 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.11.0] — 2026-09-28
+
+A verify command can now say how it behaves inside the sandbox on your machine: operator-authored **environment notes** render beside the command in both briefs, bounded at load, and explain a failure without ever excusing it ([#1050](https://github.com/formtrieb/flotilla/issues/1050), [#1051](https://github.com/formtrieb/flotilla/issues/1051)). On Linear, `store-preflight`'s PR-automation reading now grades the alignment decided in ADR-0020's 2026-09-27 amendment: "No action" before the merge, a completed state on merge ([#1056](https://github.com/formtrieb/flotilla/issues/1056)). ADR-0049 is accepted: a tracked `sandbox` block was measured reaching a dispatched worktree ([#1052](https://github.com/formtrieb/flotilla/issues/1052)). Nothing released is removed.
+
+### Upgrading
+
+1. **Plugin/marketplace:** update the plugin to 2.11.0. Marketplace listing unchanged.
+2. **Engine pin:** `@formtrieb/flotilla-engine` 2.10.0 → 2.11.0. Vendored form: re-copy `tools/wave/`.
+3. **Config keys:** optional `environmentNotes: string[]` on a verify command, at most 3 notes of at most 200 characters each. An empty array or a blank note is refused: exit 1 at `config validate`, exit 2 on load ([#1050](https://github.com/formtrieb/flotilla/issues/1050)).
+4. **Hook re-copy:** none.
+5. **Allowlist parity:** none.
+6. **Behaviour heads-ups** (same input, different outcome):
+   - **Linear consumers: a team aligned to the claim states now reads `misaligned`.** The reading stays advisory and moves no exit code. Set the four pre-merge PR events to "No action", and keep merge on a completed state or configure `states.doneState`. A rowless event now reads "no action" instead of abstaining ([#1056](https://github.com/formtrieb/flotilla/issues/1056), [#1043](https://github.com/formtrieb/flotilla/issues/1043), [#1044](https://github.com/formtrieb/flotilla/issues/1044)).
+   - `spine set-row-state … parked` refuses any source state other than `planned` or `failed` ([#1032](https://github.com/formtrieb/flotilla/issues/1032)).
+   - Every checkout a Reviewer creates, including its verify re-run, is the stamped probe the sweep collects ([#1039](https://github.com/formtrieb/flotilla/issues/1039), [#1049](https://github.com/formtrieb/flotilla/issues/1049)).
+7. **Implementer heads-ups** (additive; no root export added or removed):
+   - `VerifyCommand` gains the optional `environmentNotes` ([#1050](https://github.com/formtrieb/flotilla/issues/1050)).
+   - `LinearGitAutomationState` gains the optional `stateType`, and the real adapter's query reads `state { name type }`. `gitAutomation.mismatches[]` gains an optional `branch`. Its `expected` / `found` strings now read "No action", "no rule" and "a completed-category state", and `undecided` entries name their branch ([#1056](https://github.com/formtrieb/flotilla/issues/1056)).
+
+### Added
+
+- Environment notes on verify commands, rendered with the "a note explains, never excuses" rule in the Worker and Reviewer briefs ([#1050](https://github.com/formtrieb/flotilla/issues/1050)).
+- wave-setup offers to record a note when a command's sandboxed setup run behaves unexpectedly. It writes the note only on your yes ([#1051](https://github.com/formtrieb/flotilla/issues/1051)).
+
+### Changed
+
+- The Linear PR-automation reading grades "No action" as the pre-merge alignment. It grades branch-scoped rules where the branch does not matter, and it grades merge ([#1056](https://github.com/formtrieb/flotilla/issues/1056)).
+- ADR-0049 is `accepted`. A tracked `sandbox` block reaches a dispatched worktree through the dispatching session's checkout, merges with the global sandbox and applies without a restart ([#1052](https://github.com/formtrieb/flotilla/issues/1052)).
+- The park-entry rule is enforced by the verb ([#1032](https://github.com/formtrieb/flotilla/issues/1032)). The Coordinator's own sidecar writes are documented as digest-free by design ([#1041](https://github.com/formtrieb/flotilla/issues/1041)).
+
+### Fixed
+
+- A Reviewer's verify re-run created an unstamped worktree the sweep could not see ([#1039](https://github.com/formtrieb/flotilla/issues/1039)). Two Reviewer texts kept pre-stamp wording ([#1049](https://github.com/formtrieb/flotilla/issues/1049)).
+- The GitHub adapter's already-deleted-branch docblocks cited documentation that does not list the message they match ([#1040](https://github.com/formtrieb/flotilla/issues/1040)).
+
+### Not yet proven
+
+- The Linear query reading `state { name type }` has not run against a live team. The first `store-preflight` on a Linear consumer is the gate ([#1069](https://github.com/formtrieb/flotilla/issues/1069)).
+- The tracked `sandbox` block on a headless runner, and `network.allowedDomains`: neither has been measured ([#1052](https://github.com/formtrieb/flotilla/issues/1052)).
+
 ## [2.10.0] — 2026-09-27
 
 What lands on the default branch is now the reviewed commit, described by its own PR: the landing verbs send the PR's title and body as the commit message ([#963](https://github.com/formtrieb/flotilla/issues/963)) and refuse a PR whose head moved after its review ([#1006](https://github.com/formtrieb/flotilla/issues/1006)). The tracker gains the writers filing lacked — a dependency found after filing is written one edge at a time with `issue-store block` / `unblock` ([#622](https://github.com/formtrieb/flotilla/issues/622)), and `annotate` widens a Files list without rewriting it ([#1004](https://github.com/formtrieb/flotilla/issues/1004)). The wave loop runs round by round: land, re-anchor, close the row ([#976](https://github.com/formtrieb/flotilla/issues/976)), with Reviewer probes that live exactly as long as their row ([#961](https://github.com/formtrieb/flotilla/issues/961), [#974](https://github.com/formtrieb/flotilla/issues/974), [#991](https://github.com/formtrieb/flotilla/issues/991)) and sidecars the write verbs now check against the payload they were handed ([#1016](https://github.com/formtrieb/flotilla/issues/1016)). Forty-seven landings and five decision records (ADR-0053, ADR-0054, ADR-0055, two ADR-0042 amendments). Nothing released is removed.
