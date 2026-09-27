@@ -5069,4 +5069,64 @@ describe('skill-schema-drift — the stamped probe: every naming-rule copy pinne
     expect(reverted).not.toMatch(/every (?:detached )?checkout/i);
     expect(reverted).toContain(RETIRED_OUTCOME_ONLY);
   });
+
+  // ─── 4. the skill's own probe-license bullet also names the dispatch-tree
+  // exception (issue #1049) ──────────────────────────────────────────────────
+  //
+  // Check 1 (agent definition and checks reference) and the packaged brief all
+  // say where the verify re-run runs: the dispatch working tree when that tree
+  // already sits at the reviewed SHA, the stamped probe otherwise, never any
+  // other checkout. The operator skill's probe-license bullet named the
+  // every-checkout-is-the-probe rule but dropped this exception to save corpus
+  // bytes — the two must agree.
+
+  /** Every missing part of the exception in `text`, `[]` when it holds. Phrased
+   * for the skill bullet's third-person voice, unlike {@link verifyWhereGaps}
+   * above, which pins the second-person Check-1 copies. */
+  function skillExceptionGaps(text: string): string[] {
+    const t = text.replace(/\\`/g, '`').replace(/\s+/g, ' ');
+    const gaps: string[] = [];
+    if (!/dispatch working tree already sits at the confirmed reviewed SHA/.test(t)) gaps.push('dispatch-tree-only-at-sha');
+    if (!/where that re-run runs instead/.test(t)) gaps.push('else-runs-there');
+    if (!/never in any other checkout/.test(t)) gaps.push('no-other-checkout');
+    return gaps;
+  }
+
+  it('the SKILL.md probe-license bullet names the dispatch-tree-at-the-reviewed-SHA exception, agreeing with Check 1', () => {
+    expect(skillExceptionGaps(skillProbeLicense())).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL — the skill exception predicate FAILS on the bullet reverted to its pre-#1049 wording', () => {
+    const text = skillProbeLicense();
+    const current =
+      'is the probe checkout, a verify re-run included — unless the Reviewer\'s own dispatch working tree already sits at the confirmed reviewed SHA, where that re-run runs instead — never in any other checkout.';
+    expect(text).toContain(current);
+    const retired = ', a verify re-run included, is the probe checkout:';
+    const reverted = text.split(current).join(retired);
+    expect(reverted).not.toEqual(text);
+    expect(skillExceptionGaps(reverted)).not.toEqual([]);
+  });
+
+  // ─── 5. the licence's label no longer reads "outcome-evidence" (issue #1049) ──
+  //
+  // #1039 made every Reviewer checkout the stamped probe, not only an outcome
+  // experiment's — but the agent definition's Discipline section still labelled
+  // it "The outcome-evidence probe license (Check 3)", a name left over from
+  // before that row. No `.claude/` text may call it that any more.
+
+  const RETIRED_OUTCOME_EVIDENCE_LABEL = 'outcome-evidence probe license';
+
+  it('no `.claude/` Reviewer text labels the licence "outcome-evidence probe license"', () => {
+    for (const text of [reviewerAgentMd, reviewerSkillMd, reviewerChecksMd]) {
+      expect(text).not.toContain(RETIRED_OUTCOME_EVIDENCE_LABEL);
+    }
+  });
+
+  it('NEGATIVE CONTROL — the outcome-evidence-label predicate FAILS on the agent definition reverted to its retired label', () => {
+    const current = 'The probe license (Check 3) does not relax this';
+    expect(reviewerAgentMd).toContain(current);
+    const reverted = reviewerAgentMd.split(current).join('The outcome-evidence probe license (Check 3) does not relax this');
+    expect(reverted).not.toEqual(reviewerAgentMd);
+    expect(reverted).toContain(RETIRED_OUTCOME_EVIDENCE_LABEL);
+  });
 });
