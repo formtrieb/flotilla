@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A dispatched agent never escalates — a gate's capability is declared in config, provided by setup, and withheld when absent
@@ -56,3 +56,16 @@ A capability requirement says what a verify command *needs* to run. It says noth
 5. **Learned the way requirements are learned, with no new verb.** A note comes from two sources that already exist. (a) A dispatched agent that meets unexplained sandbox behaviour discloses it and names the command. The operator turns the disclosure into a note, and the next wave carries it: decision 5's one-round boundary. (b) Setup already runs each `needs`-bearing command once inside the sandbox (decision 3). When that run behaves unexpectedly, setup asks whether to record a note. No `wave-setup --re-measure` and no persisted profile file: both were considered and rejected as a second measuring surface for facts the two existing channels already surface.
 
 **Semver:** an optional field that existing configs never carry, so a minor. It is still a change to the config contract and lands as a public-API-change row. **Scope:** the engine half (field, validation, rendering, the brief rule) and the setup half (decision 5b) are separate rows.
+
+## Amendment 2026-09-27 — the tracked `sandbox` block is measured: it reaches a dispatched worktree through the dispatching session (issue #1052)
+
+The Consequences above left one item open deliberately: whether the harness merges a project-tracked `sandbox` block with the user's global one, and so whether decision 3's carrier reaches a dispatched worktree at all. It was measured on 2026-09-27 in this repository, with a control, on a local branch that was never pushed. Full runs are on #1052.
+
+- **Control.** Without a tracked block, a write to a probe path outside the worktree was refused (`operation not permitted`), both in the Operator's session and in an agent dispatched with worktree isolation. The agent's write inside its own worktree succeeded, so the pair discriminates.
+- **Probe.** The Operator's checkout gained `sandbox.filesystem.allowWrite` naming exactly that path, committed, and the session was restarted. The same write then succeeded in the session and in a newly dispatched worktree agent. The session's sandbox listed the path beside the globally configured entries: **the project block merges with the global one**, it does not replace it.
+- **Where the grant travels.** Both probe agents' worktrees were cut from `main`, not from the checked-out branch, so their own `.claude/settings.json` carried no `sandbox` key at all. Their writes were allowed anyway. The carrier is the **dispatching session's checkout**, not the worktree's copy of the file.
+- **No restart for a change.** Adding a second path to the block, uncommitted and without a restart, took effect at once for the session and for an agent dispatched afterwards.
+
+**Reading of decision 3.** The carrier holds, so this record moves from `proposed` to `accepted`. One word in it is sharpened by the measurement: the tracked block reaches a dispatched worktree because the *Coordinator's* checkout carries it, not because the worktree does. A block must therefore be on the branch the Coordinator runs from. A block that exists only on a row's branch grants nothing to that row's agents.
+
+**Still unmeasured.** A headless runner (ADR-0048) was not part of the run; a runner that starts its own session in a checkout presumably reads that checkout's block the same way, but that was not observed. Only `filesystem.allowWrite` was measured, not `network.allowedDomains`. Both stay as stated in decision 3 until a run shows otherwise.
