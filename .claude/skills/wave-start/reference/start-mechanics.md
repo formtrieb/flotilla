@@ -829,11 +829,12 @@ git -C "$REPO" worktree remove "$PROBE"   # $PROBE: the stamped path, ends -i<it
 
 # 8a. OPTIONAL Coordinator disposition of a `terminal-failure` STOP — park instead
 #     of abandoning (ADR-0022 §Consequences). The stopped row is still live
-#     (dispatched/re-dispatched/reviewing); `parked`'s only legal entries are
-#     `planned`/`failed`, so land it in `failed` first (the existing stop path),
-#     then park, then release the claim, then clear the flag set in step 8 —
-#     parking answers its own question. Never automatic: only for an id you
-#     have decided will be re-planned into a FUTURE wave, not this one.
+#     (dispatched/re-dispatched/report-in/reviewing/verdict-in); `parked`'s only
+#     legal entries are `planned`/`failed`, so land it in `failed` first (the
+#     existing stop path), then park, then release the claim, then clear the
+#     flag set in step 8 — parking answers its own question. Never automatic:
+#     only for an id you have decided will be re-planned into a FUTURE wave,
+#     not this one.
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" failed    # from the live state
 {{wave-cli}} spine set-row-state "$SPINE" "$ID" parked    # from failed
 {{wave-cli}} issue-store unclaim "$ID"                     # releases the claim → available
