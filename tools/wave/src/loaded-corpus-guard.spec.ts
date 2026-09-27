@@ -1198,6 +1198,12 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // over the same 57 files — 7,464 B of headroom, up from row #1007's 3,157 B — and leaves this
 // constant exactly where row #998 set it, for a later ratchet row to lower. Shared standing load
 // untouched (160,956 B — this row touches no `wave-shared/` file).
+// NOT raised by issue #1028 (three texts realigned to the shipped `block`/`unblock` verbs and the
+// advisory `gitAutomation` reading — ADR-0054's amendment, goal/SKILL.md's ship-member passages,
+// wave-setup/SKILL.md's item-6 heading and by-hand instruction): the two touched skill files add
+// 988 B, re-measured at 1,269,576 B over the same 57 files (next full KB 1,270,000 < this value) —
+// 6,424 B of headroom left. Shared standing load untouched (160,956 B — this row touches no
+// `wave-shared/` file). The ADR file itself is `docs/adr/`, outside both populations by construction.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
