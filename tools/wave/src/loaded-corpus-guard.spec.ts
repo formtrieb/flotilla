@@ -1235,6 +1235,15 @@ const LOADED_CORPUS_CEILING_BYTES = 1_278_000; // RAISED by issue #1051 — see 
 // 1,276,000 B ceiling, so it moves to that sum rounded UP to the next full KB (1 KB = 1000 B):
 // 1,278,000 B. 639 B of headroom left. Shared standing load untouched (162,892 B — this row touches no
 // `wave-shared/` file).
+// NOT raised or lowered by issue #1049 (aligns two Reviewer texts with #1039's every-checkout-is-the-probe
+// rule: the wave-reviewer skill's probe-license bullet now names the dispatch-tree-at-the-reviewed-SHA
+// exception Check 1 already carried, and the agent definition's Discipline label drops the retired
+// "outcome-evidence" qualifier): SKILL.md's probe-license bullet adds 5 B (the added exception, paid for
+// by tightening the same bullet elsewhere) and the agent definition's Discipline label removes 17 B, net
+// −12 B. This row's own edit re-measures the population at 1,277,349 B over the same 57 files — 651 B of
+// headroom, up from row #1051's 639 B — and leaves this constant exactly where row #998 set it, for a
+// later ratchet row to lower. Shared standing load untouched (162,892 B — this row touches no
+// `wave-shared/` file).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
