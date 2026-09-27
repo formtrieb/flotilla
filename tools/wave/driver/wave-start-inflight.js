@@ -1106,6 +1106,10 @@ commands + the floor checks against \`${issue.anchorSha}..refs/review/${issue.id
 name, never \`FETCH_HEAD\`), per-AC met/partial/not-met with evidence (against the
 embedded spec above), sibling merge-tree prediction.
 
+**Where the verify re-run runs:** in your dispatch working tree only if it already sits at the
+\`refs/review/${issue.id}\` SHA; otherwise in your stamped probe \`${probeStamp}\` (below), checked
+out at that SHA. Create no other checkout — every checkout you make, for any purpose, is that probe.
+
 **SIBLING MERGE-TREE PREDICTION REPORTS ITS COVERAGE DENOMINATOR.** The sibling list above is
 the DENOMINATOR, and every sibling on it gets exactly ONE outcome: \`predicted-clean\` |
 \`predicted-conflict\` | \`not-on-origin\` | \`at-anchor\` | \`landed\`. One case gets none: a sibling
@@ -1206,8 +1210,8 @@ as an outcome ("the check exists", "the guard is enforced") earns \`met\` only o
 outcome-exercising evidence — the Worker's falsification, or your own probe.
 
 **Your probe checkout, if you make one, lives OUTSIDE the repository and carries its stamp.** The
-probe licence (agent contract Check 3) lets you exercise an outcome in a detached checkout of your
-own: put it under a temp root, never inside this repository — the harness denies agent-configuration
+probe licence (agent contract Check 3) covers every detached checkout of your own — a verify
+re-run and an outcome experiment alike: put it under a temp root, never inside this repository — the harness denies agent-configuration
 files at any depth of an in-repo checkout — and the path you hand to \`git worktree add\` must itself
 end in \`${probeStamp}\`: the stamp is the checkout directory's own basename, never a parent directory
 (the sweep matches the registered checkout's basename, so \`<stamp>/probe\` is never collected). That

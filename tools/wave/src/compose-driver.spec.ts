@@ -4506,6 +4506,24 @@ describe('compose-driver — the sibling denominator spans the WAVE, not this co
     expect(brief).not.toMatch(/flotilla-probe-[^`]*undefined/);
   });
 
+  // Issue #1039: two Reviewers re-ran the verify gate in unstamped checkouts
+  // the probe sweep could not see. The rendered brief says, beside the verify
+  // instruction and with the rendered stamp, where the re-run runs.
+  it('the composed Reviewer brief puts the verify re-run in the stamped probe, or the dispatch tree only at the reviewed SHA, and nowhere else', async () => {
+    const { spinePath, configPath, storeIds } = await seed(LANDED_ROWS);
+    const id = storeIds.get('B') as string;
+    const flat = (await reviewerBriefFor(spinePath, configPath, storeIds, 'B')).replace(/\s+/g, ' ');
+    const stamp = `flotilla-probe-${SLUG}-${id}-i1`;
+    expect(flat).toContain(
+      `**Where the verify re-run runs:** in your dispatch working tree only if it already sits at the \`refs/review/${id}\` SHA; otherwise in your stamped probe \`${stamp}\` (below), checked out at that SHA. Create no other checkout — every checkout you make, for any purpose, is that probe.`,
+    );
+    // It sits beside the verify instruction, before the sibling section.
+    expect(flat.indexOf('**Where the verify re-run runs:**')).toBeGreaterThan(flat.indexOf('re-run the verify commands + the floor checks'));
+    expect(flat.indexOf('**Where the verify re-run runs:**')).toBeLessThan(flat.indexOf('**SIBLING MERGE-TREE PREDICTION'));
+    expect(flat).toContain('covers every detached checkout of your own — a verify re-run and an outcome experiment alike');
+    expect(flat).not.toContain('lets you exercise an outcome in a detached checkout');
+  });
+
   // Issue #991: Reviewers who falsified a check inside their probe left the
   // edit behind; the sweep skipped each `dirty` and each needed a hand
   // removal. The composed brief — what a running Reviewer actually reads,
