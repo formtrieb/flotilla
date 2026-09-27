@@ -52,6 +52,7 @@ import { verifyCommands, type VerifyCommand } from './verify';
 import { resolveStore } from './cli-store';
 import {
   defineVerb,
+  flagContractForToken,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -118,23 +119,52 @@ export interface DriverRow {
   siblingBranches: string;
   iteration1HeadSha?: string;
   /**
-   * Present ONLY on a row composed with `--reviewer-only`: the row's own report
+   * Present ONLY on a row named by `--reviewer-only <id>`: the row's own report
    * sidecar at its current iteration, read and validated at compose time. Its
    * presence IS the mode for that row — the template's Worker stage returns it
    * instead of dispatching a Worker, and its report Scribe stage passes it
-   * through instead of re-writing the sidecar it came from. Absent on every
-   * ordinary row, so an ordinary compose is byte-identical to before it existed.
+   * through instead of re-writing the sidecar it came from.
+   *
+   * Absent on every row the flag does not name, and that row then BEHAVES as it
+   * did before the field existed: its `ISSUES` entry carries no such key, so both
+   * stages take their ordinary branch. That is behavioural identity, not byte
+   * identity — the template's Stage 1 and Stage 2 gained the branch that reads
+   * this field, so a script composed today differs from one composed before it
+   * in those two stages' text. The substitution pin in `compose-driver.spec.ts`
+   * proves only that the composer changes nothing but the six constants and the
+   * `ISSUES` array; the ordinary-row behaviour is pinned by running a composed
+   * script under the Workflow-tool stubs.
    */
   reviewerOnlyReport?: WorkerReport;
 }
 
 /**
- * The two modes a compose runs in, as the receipt names them. `full` is the
- * ordinary four-stage round; `reviewer-only` re-reviews reports a Worker already
- * returned (the path back from an answered `reviewer-questions-blocking`).
- * Module-local: a caller reads the mode off the receipt JSON, never this type.
+ * The mode ONE composed row runs in, as the receipt names it per row. `full` is
+ * the ordinary four-stage round; `reviewer-only` re-reviews the report a Worker
+ * already returned (the path back from an answered
+ * `reviewer-questions-blocking`). Module-local: a caller reads the mode off the
+ * receipt JSON, never this type.
  */
-type DriverMode = 'full' | 'reviewer-only';
+type RowMode = 'full' | 'reviewer-only';
+
+/**
+ * The receipt's top-level mode: every row `full`, every row `reviewer-only`, or
+ * `mixed` when `--reviewer-only` named some of the dispatchable rows and not the
+ * rest. Module-local for the same reason as {@link RowMode}.
+ */
+type DriverMode = RowMode | 'mixed';
+
+/** A composed row's mode — read off the field whose presence IS the mode. */
+function rowModeOf(row: DriverRow): RowMode {
+  return row.reviewerOnlyReport === undefined ? 'full' : 'reviewer-only';
+}
+
+/** The top-level mode a set of per-row modes adds up to. */
+function driverModeOf(rowModes: readonly RowMode[]): DriverMode {
+  if (rowModes.every((m) => m === 'full')) return 'full';
+  if (rowModes.every((m) => m === 'reviewer-only')) return 'reviewer-only';
+  return 'mixed';
+}
 
 /**
  * The row's report sidecar at exactly `iteration`, validated — or a throw that
@@ -158,8 +188,9 @@ function savedReportAt(reportsDir: string, id: string, iteration: number): Worke
     new Error(
       `compose-driver: --reviewer-only: row ${id} has no valid report sidecar at its iteration ` +
         `${iteration} — ${why}. A Reviewer-only round re-reviews the report a Worker already ` +
-        'returned at that iteration, so without one there is nothing to review: compose an ' +
-        'ordinary round instead, or restore the sidecar through write-report, then re-compose.',
+        'returned at that iteration, so without one there is nothing to review: drop ' +
+        `\`--reviewer-only ${id}\` to compose it as an ordinary row, or restore the sidecar ` +
+        'through write-report, then re-compose.',
     );
   if (!existsSync(path)) throw refusal(`${path} does not exist`);
   const index = readSidecars(reportsDir, '', {
@@ -1203,12 +1234,15 @@ export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
     { canonical: '--template', value: 'one', valueType: 'path' },
     { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
     { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
-    // Issue #992. A switch, not a value: every composed row's Worker stage
-    // returns the row's report sidecar at its current iteration (read from the
+    // Issue #992, made per-row. A row id, repeatable: each NAMED row's Worker
+    // stage returns its report sidecar at its current iteration (read from the
     // reports dir above) and dispatches no Worker, and its report Scribe stage is
-    // skipped. Refused, exit 1 naming the row, when that sidecar is absent or
-    // does not validate. The Reviewer and verdict-Scribe stages are unchanged.
-    { canonical: '--reviewer-only', value: 'none', valueType: 'none' },
+    // skipped; every other dispatchable row composes as an ordinary row in the
+    // same script. Refused, exit 1 naming the row, when that sidecar is absent or
+    // does not validate, or when the id is not a dispatchable row. The bare
+    // switch is refused as usage (exit 2): it once swept up every dispatchable
+    // row, a stopped sibling with a valid report included.
+    { canonical: '--reviewer-only', value: 'repeatable', valueType: 'id', placeholder: '<id>' },
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
@@ -1222,10 +1256,10 @@ export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
     shape:
       '{ ok, verb, out, scriptBytes, template, templateBytes, wave, anchor, ' +
       'reviewerAgent, reviewerAgentForm, pluginName, waveCli, scribeModel, mode, ' +
-      'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource } ] }',
+      'rows: [ { id, slug, branch, model, iteration, risk, worker, scopeGrants, depsSetupSource, mode } ] }',
     trail:
-      'scribeModel is null when this consumer states none; mode is full | reviewer-only; ' +
-      'a failure prints no JSON',
+      'scribeModel is null when this consumer states none; a row mode is full | reviewer-only, ' +
+      'the top-level mode full | reviewer-only | mixed; a failure prints no JSON',
   },
 });
 
@@ -1237,6 +1271,36 @@ export const COMPOSE_DRIVER_CONTRACT: VerbContract = defineVerb({
 function usage(message: string): number {
   process.stderr.write([`error: ${message}`, ...COMPOSE_DRIVER_CONTRACT.usage, ''].join('\n'));
   return 2;
+}
+
+/**
+ * The row ids `--reviewer-only` names, in argv order and de-duplicated — or
+ * `null` when any occurrence carries no id.
+ *
+ * Read BEFORE the contract refusal, and by hand rather than through the
+ * contract's repeatable-value reader, because the bare switch is exactly the
+ * call that reader would mis-take: a `--reviewer-only` followed by another flag
+ * would swallow that flag as its "id", and the one after it would surface as a
+ * stray positional — a refusal naming the wrong token. A value that is absent,
+ * blank, or itself flag-shaped is the bare form, and it is refused as usage
+ * naming the id form. Every other value-taking flag's value is stepped over,
+ * so `--row-meta '--reviewer-only'` is never read as the switch.
+ */
+function reviewerOnlyIds(args: readonly string[]): string[] | null {
+  const ids: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--reviewer-only') {
+      const value = args[i + 1];
+      if (value === undefined || value.trim() === '' || value.startsWith('--')) return null;
+      if (!ids.includes(value)) ids.push(value);
+      i++;
+      continue;
+    }
+    const f = flagContractForToken(COMPOSE_DRIVER_CONTRACT, token);
+    if (f !== undefined && f.value !== 'none') i++;
+  }
+  return ids;
 }
 
 function readFileOrNull(path: string): string | null {
@@ -1304,6 +1368,16 @@ export async function runComposeDriver(
   injected?: IssueStore,
 ): Promise<number> {
   if (helpRequested(COMPOSE_DRIVER_CONTRACT, args)) return printVerbHelp(COMPOSE_DRIVER_CONTRACT);
+  // Before the contract refusal: see `reviewerOnlyIds` for why the bare switch
+  // has to be caught here rather than there.
+  const reviewerOnly = reviewerOnlyIds(args);
+  if (reviewerOnly === null) {
+    return usage(
+      'compose-driver: --reviewer-only takes a row id — pass `--reviewer-only <id>`, once per ' +
+        'row to re-review (repeat it for several rows). The bare switch, which re-reviewed every ' +
+        'dispatchable row, is refused.',
+    );
+  }
   const contractRefusal = refuseUndeclared(COMPOSE_DRIVER_CONTRACT, args);
   if (contractRefusal !== 0) return contractRefusal;
 
@@ -1338,10 +1412,10 @@ export async function runComposeDriver(
   // Resolved ONCE, here, because two readers need the same answer: the
   // template's REPORTS_DIR constant (where the Scribe writes) and, under
   // `--reviewer-only`, the saved-report read (where this compose reads). One
-  // value means a Reviewer-only round reads exactly the sidecar the ordinary
+  // value means a Reviewer-only row reads exactly the sidecar the ordinary
   // round's Scribe wrote.
   const reportsDir = flag(args, '--reports-dir') ?? join(repoRoot, '.flotilla', 'waves', slug, 'reports');
-  const mode: DriverMode = args.includes('--reviewer-only') ? 'reviewer-only' : 'full';
+  const reviewerOnlyRows = new Set(reviewerOnly);
 
   let spineSource: string;
   try {
@@ -1379,6 +1453,25 @@ export async function runComposeDriver(
       process.stderr.write(
         `error: compose-driver: no row in ${spineAbs} is in a dispatchable state ` +
           `(${DISPATCHABLE_STATES.join(' | ')}) — flip the rows in-flight before composing.\n`,
+      );
+      return 1;
+    }
+
+    // Every id `--reviewer-only` names has to be a row THIS compose dispatches.
+    // Anything else is a typo or a row in the wrong state, and composing past it
+    // would dispatch an ordinary round for a row the Coordinator meant to
+    // re-review — or re-review nothing at all while reading as if it had.
+    const dispatchableIds = new Set(dispatchable.map((r) => r.id));
+    const notDispatchable = reviewerOnly.filter((id) => !dispatchableIds.has(id));
+    if (notDispatchable.length > 0) {
+      const described = notDispatchable.map((id) => {
+        const row = spine.planTable.find((r) => r.id === id);
+        return row === undefined ? `${id} (no such row in the spine)` : `${id} (state ${String(row.state)})`;
+      });
+      process.stderr.write(
+        `error: compose-driver: --reviewer-only names ${described.join(', ')} — not a row in a ` +
+          `dispatchable state (${DISPATCHABLE_STATES.join(' | ')}). The dispatchable rows are ` +
+          `${[...dispatchableIds].join(', ')}; name one of them, or drop the flag for that id.\n`,
       );
       return 1;
     }
@@ -1433,10 +1526,14 @@ export async function runComposeDriver(
     for (const { row, branch, rowSlug } of roster) {
       const meta = rowMeta[row.id] ?? {};
       const iteration = typeof row.iter === 'number' ? row.iter : Number(row.iter) || 1;
-      // The `--reviewer-only` refusal (issue #992) runs FIRST for the row, before
-      // any store read: without a valid report at this iteration there is
+      // The `--reviewer-only` refusal (issue #992) runs FIRST for a NAMED row,
+      // before any store read: without a valid report at this iteration there is
       // nothing for the round to review, and nothing else about the row matters.
-      const savedReport = mode === 'reviewer-only' ? savedReportAt(reportsDir, row.id, iteration) : undefined;
+      // A row the flag does not name is never read here, whatever sits on disk
+      // for it — a stopped sibling with a valid report stays an ordinary row.
+      const savedReport = reviewerOnlyRows.has(row.id)
+        ? savedReportAt(reportsDir, row.id, iteration)
+        : undefined;
       const view: IssueView = await store.read(row.id);
       const triage: TriageView = await store.readTriage(row.id);
       const verify = config.verify ? verifyCommands(view.files, config.verify) : [];
@@ -1625,11 +1722,11 @@ export async function runComposeDriver(
       // the same reason every row's `model` is on the receipt: an operator
       // reads which model each dispatch bound, rather than inferring it.
       scribeModel: scribeModel === '' ? null : scribeModel,
-      // Which round this script runs (issue #992): `full`, or `reviewer-only`
-      // — every row's Worker stage returns its saved report and no Worker runs.
+      // Which round this script runs (issue #992): `full`, `reviewer-only` when
+      // every row was named, or `mixed`; each row carries its own `mode` below.
       // On the receipt because the script's own behaviour is invisible until
       // the harness runs it, and the dispatch record is where it is checked.
-      mode,
+      mode: driverModeOf(rows.map(rowModeOf)),
       rows: rows.map((r) => ({
         id: r.id,
         slug: r.slug,
@@ -1640,6 +1737,7 @@ export async function runComposeDriver(
         worker: r.worker,
         scopeGrants: (r.scopeGrants ?? []).length,
         depsSetupSource: depsSourceByRow.get(r.id) ?? 'none',
+        mode: rowModeOf(r),
       })),
     });
     return 0;

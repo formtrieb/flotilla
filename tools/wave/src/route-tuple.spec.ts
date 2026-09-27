@@ -693,6 +693,80 @@ describe('route-tuple', () => {
     });
   });
 
+  // ── a row landed while still flagged (issue #1017) ─────────────────────────
+  //
+  // The step-8 STOP sets the needs-attention flag; a Reviewer-only re-review
+  // that approves lands the row through this verb. The verb never clears the
+  // flag (the Coordinator does, at the point the Operator answers) — it WARNS
+  // when the row it just landed still reads flagged, and changes nothing else.
+
+  describe('a row landed while its tracker still reads needs-attention', () => {
+    const FLAG = {
+      kind: 'recoverable-stop' as const,
+      question: 'Which reading of the criterion is meant?',
+      options: ['the narrow one', 'the wide one'],
+    };
+
+    it('prints a `warning:` naming the row, still exits 0, writes exactly what an unflagged landing writes, and leaves the flag standing', async () => {
+      await seed();
+      await store.flag(id, FLAG);
+      expect(await rungOf()).toBe('needs-attention');
+      landTuple(1, report(), verdict());
+      const { http, requests } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+
+      expect(code).toBe(0);
+      const warnings = stderr.split('\n').filter((l) => l.startsWith('warning:'));
+      expect(warnings).toEqual([
+        `warning: route-tuple: row ${JSON.stringify(id)} landed at pr-created, but its tracker status still reads needs-attention.`,
+      ]);
+      expect(stderr).toContain(`issue-store clear-flag ${id}`);
+      // The landing itself is the ordinary one: same disposition, same writes.
+      expect(result()).toMatchObject({
+        ok: true,
+        disposition: 'pr-created',
+        prUrl: NEW_PR,
+        wrote: { spine: true, host: true, tracker: true },
+      });
+      expect(step('rung-transition')).toMatchObject({ status: 'performed', rung: 'in-review' });
+      expect(requests.map((r) => r.method)).toEqual(['GET', 'POST']);
+      // Warned, never cleared: the flag still overlays the rung it now sits on.
+      expect(await rungOf()).toBe('needs-attention');
+      await store.clearFlag(id);
+      expect(await rungOf()).toBe('in-review');
+    });
+
+    it('CONTROL — an unflagged row lands with no warning at all', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+      expect(code).toBe(0);
+      expect(stderr).toBe('');
+      expect(stderr).not.toContain('needs-attention');
+    });
+
+    it('the markdown store reads the same way — its flag overlays the rung and draws the same warning', async () => {
+      await seed({ markdown: true });
+      await store.flag(id, FLAG);
+      landTuple(1, report(), verdict());
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(1),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+      expect(code).toBe(0);
+      expect(stderr).toContain(`warning: route-tuple: row ${JSON.stringify(id)} landed at pr-created`);
+      expect(await rungOf()).toBe('needs-attention');
+    });
+  });
+
   // ── the stop branches ──────────────────────────────────────────────────────
 
   describe('stop outcomes write nothing and say what is needed next', () => {

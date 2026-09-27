@@ -1211,6 +1211,10 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // (+1,491 B, the standing-load line above) and wave-start's workflow-driver.md (+1,236 B) add 2,727 B,
 // re-measured at 1,272,303 B over the same 57 files (next full KB 1,273,000 < this value) — 3,697 B of
 // headroom left.
+// NOT raised by issue #1017 (`--reviewer-only <id>` per row, the answered-question flag-clear): wave-start's
+// SKILL.md (+481 B), start-mechanics.md (+630 B) and workflow-driver.md (+262 B) add 1,373 B, re-measured at
+// 1,273,676 B over the same 57 files (next full KB 1,274,000 < this value) — 2,324 B of headroom left.
+// Shared standing load untouched (162,447 B — this row touches no `wave-shared/` file).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
