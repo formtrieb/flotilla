@@ -261,6 +261,17 @@ export interface LinearGitAutomationState {
    */
   stateName: string | null;
   /**
+   * The CATEGORY of the state the rule moves an issue to — Linear's
+   * `WorkflowState.type` (`completed`, `started`, …), read beside the name so
+   * the store-preflight reading can grade `merge` (ADR-0020 amendment
+   * 2026-09-27: aligned only on a `completed`-category state). A `string`, not
+   * {@link LinearStateType}, for `event`'s reason. `null` when the rule takes
+   * no action or the vendor sent no type; OPTIONAL (an additive field) so a
+   * hand-built rule without it still type-checks — a merge rule with no type
+   * is graded as undecided, never as aligned.
+   */
+  stateType?: string | null;
+  /**
    * The branch the rule is scoped to, or `null` — which the schema documents as
    * "a default rule that applies to all branches". A branch-scoped rule
    * "override[s] any default rule for the same event" for PRs targeting it.

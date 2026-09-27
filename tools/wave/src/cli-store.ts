@@ -284,8 +284,9 @@ export interface StorePreflightReport {
     readonly detail: string;
   };
   /**
-   * The Linear team's own PR-automation rules, read and graded against the
-   * configured claim states (ADR-0020 amendment 2026-09-25) — see
+   * The Linear team's own PR-automation rules, read and graded per ADR-0020's
+   * amendment of 2026-09-27 ("No action" on the four pre-merge events, `merge`
+   * on a completed state or `states.doneState` configured) — see
    * {@link gitAutomationReading}. Present on a `linear` report only; the other
    * store kinds have no such rules to read.
    *
@@ -296,26 +297,29 @@ export interface StorePreflightReport {
    * `PreflightCheck['name']` is a closed, root-exported union.
    *
    * Three answers, not two (ADR-0052): `aligned` and `misaligned` are verdicts;
-   * `abstain` says the reading could not decide — a graded event has no
-   * team-default rule (Linear may apply an implicit default the API does not
-   * report), the adapter does not implement the optional read, or the read
-   * failed. `misaligned` wins over `abstain` when both apply: one definite
-   * mismatch is a verdict whatever the undecided events turn out to be.
+   * `abstain` says the reading could not decide — the adapter does not
+   * implement the optional read, the read failed, or (with nothing misaligned)
+   * a branch-scoped or untyped rule depends on what the reading cannot see.
+   * A rowless event never abstains: it reads as "no action". `misaligned` wins
+   * over `abstain` when both apply: one definite mismatch is a verdict whatever
+   * the undecided rules turn out to be.
    */
   gitAutomation?: {
     readonly status: 'aligned' | 'misaligned' | 'abstain';
-    /** Each graded team-default rule that targets a different state than the config names. */
+    /** Each rule (or missing rule) the grading holds against the team. */
     readonly mismatches?: readonly {
-      /** The Git event the rule fires on (`draft` / `start` / `review` / `mergeable`). */
+      /** The Git event (`draft` / `start` / `review` / `mergeable` / `merge`). */
       readonly event: string;
-      /** The state Linear moves the issue to. */
+      /** The state Linear moves the issue to, `No action`, or `no rule`. */
       readonly found: string;
-      /** The state this config names for that event's rung. */
+      /** The aligned setting: `No action`, or a completed-category state for `merge`. */
       readonly expected: string;
+      /** The branch pattern, on a branch-scoped rule only. */
+      readonly branch?: string;
     }[];
-    /** Graded events with NO team-default rule — why the reading abstained. */
+    /** Rules the reading cannot decide — a branch-scoped rule on a non-claim state, or a merge rule without a state type. */
     readonly undecided?: readonly string[];
-    /** Graded events whose team-default rule takes no action (a null target state) — never a mismatch. */
+    /** Events that take no action (a null target state, or no team-default rule) where that is the aligned setting. */
     readonly noAction?: readonly string[];
     /** Every rule as read, team-default and branch-scoped alike — present whenever the read ran. */
     readonly rules?: readonly LinearGitAutomationState[];
@@ -428,23 +432,14 @@ function goalBindingReading(config: WaveConfig): NonNullable<StorePreflightRepor
 // ── the team's PR-automation rules, read at preflight time (ADR-0020) ────────
 
 /**
- * Which Git events are GRADED, and against which configured rung — the
- * alignment rule of ADR-0020's 2026-09-21 amendment, keyed by Linear's own
- * `GitAutomationStates` members: a PR opened as draft (`draft`) or opened
- * (`start`) moves the row to `states.inFlight`; review requested (`review`) or
- * ready to merge (`mergeable`) to `states.inReview`. `merge` is deliberately
- * absent — Linear's own Done-on-merge stays on and the reading only reports it —
- * and so is any event the vendor adds later: reported, never graded.
+ * The PRE-MERGE events — Linear's own `GitAutomationStates` members for a PR
+ * opened as draft (`draft`), opened (`start`), review requested (`review`) and
+ * ready to merge (`mergeable`). Under ADR-0020's 2026-09-27 amendment the only
+ * aligned setting for all four is "No action": flotilla alone writes the claim
+ * rungs. `merge` is graded separately ({@link gitAutomationReading}); any event
+ * the vendor adds later is reported, never graded.
  */
-const GRADED_GIT_AUTOMATION_EVENTS: readonly {
-  readonly event: string;
-  readonly rung: 'inFlight' | 'inReview';
-}[] = [
-  { event: 'draft', rung: 'inFlight' },
-  { event: 'start', rung: 'inFlight' },
-  { event: 'review', rung: 'inReview' },
-  { event: 'mergeable', rung: 'inReview' },
-];
+const PRE_MERGE_GIT_AUTOMATION_EVENTS: readonly string[] = ['draft', 'start', 'review', 'mergeable'];
 
 /** Where a human reads and fixes the rules — Linear's own per-team settings path. */
 const GIT_AUTOMATION_SETTINGS_PATH =
@@ -454,27 +449,38 @@ const GIT_AUTOMATION_SETTINGS_PATH =
 const GIT_AUTOMATION_ADVISORY =
   'Advisory only — this reading never fails the preflight.';
 
+/** How a mismatch names a rule that takes no action, or an event with no rule at all. */
+const NO_ACTION = 'No action';
+const NO_RULE = 'no rule';
+
+/** What a merge rule must name to be aligned on its own. */
+const COMPLETED_STATE = 'a completed-category state';
+
 /**
- * Read the Linear team's PR-automation rules and grade the TEAM-DEFAULT ones
- * (no target branch) against the configured claim states — the probe that
- * replaced wave-setup's human-only precondition item 6 wherever it can decide.
+ * Read the Linear team's PR-automation rules and grade them per ADR-0020's
+ * 2026-09-27 amendment — the probe that replaced wave-setup's human-only
+ * precondition item 6 wherever it can decide.
  *
- * Never throws: an adapter without the optional `listGitAutomationStates`, and
- * a read that fails, both come back `abstain` with the reason in `detail`. The
- * grading, per rule:
- *   - a team-default rule on a graded event naming the configured state →
- *     aligned; naming another state → a mismatch (event, found, expected);
- *   - a team-default rule with a null state → "no action", never a mismatch:
- *     the rule overrides Linear's default and moves nothing, so it cannot
- *     rewrite the claim ledger;
- *   - a graded event with NO team-default rule → undecided (ADR-0052): Linear
- *     may apply an implicit default the API does not report;
- *   - a branch-scoped rule → listed and counted, never graded (matching a
- *     pattern, regex or not, against this repo's target branch is out of scope);
- *   - `merge`, and any event outside the graded four → reported, never graded.
+ * Never throws, and ABSTAINS only when the rules could not be read at all: an
+ * adapter without the optional `listGitAutomationStates`, or a read that fails.
+ * The grading, per rule ("claim state" = the configured `states.queued`,
+ * `states.inFlight` or `states.inReview`):
+ *   - pre-merge event, team default: a null state, or no rule at all → "no
+ *     action" (the aligned setting — a rowless event moves nothing, measured
+ *     live); a claim state → a mismatch that moves issues no wave claimed; any
+ *     other state → a mismatch;
+ *   - pre-merge event, branch-scoped: a null state → fine; a claim state → a
+ *     mismatch whatever the branch; any other state → undecided, since it
+ *     matters only if the wave's PRs target that branch;
+ *   - `merge`, team default: a `completed`-category state → aligned; a null
+ *     state or no rule → a mismatch without `states.doneState` (merged PRs close
+ *     no issue), fine with it; any other state → a mismatch either way; a rule
+ *     whose state type did not come back → undecided, never aligned;
+ *   - `merge`, branch-scoped: a `completed`-category state → fine; anything else
+ *     → undecided, unless `states.doneState` is configured;
+ *   - any event outside those five → reported, never graded.
  *
- * Runs whether or not `states.doneState` is configured: the FOR-13 fallback
- * decides how a row reaches `done`, not where a PR's opening moves it.
+ * `misaligned` wins over undecided; undecided alone reads `abstain`.
  */
 async function gitAutomationReading(
   api: LinearApi | undefined,
@@ -497,44 +503,90 @@ async function gitAutomationReading(
     };
   }
 
-  const defaults = rules.filter((r) => r.targetBranch === null);
-  const branchScoped = rules.filter((r) => r.targetBranch !== null);
-  const mismatches: { event: string; found: string; expected: string }[] = [];
+  const claimStates = new Set([states.queued, states.inFlight, states.inReview]);
+  const hasDoneState = states.doneState !== undefined;
+  const branchOf = (r: LinearGitAutomationState) =>
+    `${r.targetBranch!.isRegex ? 'pattern' : 'branch'} "${r.targetBranch!.branchPattern}"`;
+  const mismatches: { event: string; found: string; expected: string; branch?: string }[] = [];
   const undecided: string[] = [];
   const noAction: string[] = [];
-  for (const { event, rung } of GRADED_GIT_AUTOMATION_EVENTS) {
-    const expected = states[rung];
-    const onEvent = defaults.filter((r) => r.event === event);
-    if (onEvent.length === 0) {
-      undecided.push(event);
-      continue;
-    }
-    for (const rule of onEvent) {
+  const why: string[] = [];
+  const unsure: string[] = [];
+  const addNoAction = (event: string) => {
+    if (!noAction.includes(event)) noAction.push(event);
+  };
+
+  for (const event of PRE_MERGE_GIT_AUTOMATION_EVENTS) {
+    const onEvent = rules.filter((r) => r.event === event);
+    const defaults = onEvent.filter((r) => r.targetBranch === null);
+    if (defaults.length === 0) addNoAction(event);
+    for (const rule of defaults) {
       if (rule.stateName === null) {
-        if (!noAction.includes(event)) noAction.push(event);
-      } else if (rule.stateName !== expected) {
-        mismatches.push({ event, found: rule.stateName, expected });
+        addNoAction(event);
+      } else if (claimStates.has(rule.stateName)) {
+        mismatches.push({ event, found: rule.stateName, expected: NO_ACTION });
+        why.push(`on "${event}" Linear moves the issue to the claim state "${rule.stateName}" — it moves issues no wave claimed; "${NO_ACTION}" is the aligned setting`);
+      } else {
+        mismatches.push({ event, found: rule.stateName, expected: NO_ACTION });
+        why.push(`on "${event}" Linear moves the issue to "${rule.stateName}"; "${NO_ACTION}" is the aligned setting`);
       }
     }
+    for (const rule of onEvent.filter((r) => r.targetBranch !== null)) {
+      if (rule.stateName === null) continue;
+      const branch = rule.targetBranch!.branchPattern;
+      if (claimStates.has(rule.stateName)) {
+        mismatches.push({ event, found: rule.stateName, expected: NO_ACTION, branch });
+        why.push(`on "${event}" for PRs targeting ${branchOf(rule)} Linear moves the issue to the claim state "${rule.stateName}" — whatever the branch, it moves issues no wave claimed or pulls a row back; "${NO_ACTION}" is the aligned setting`);
+      } else {
+        undecided.push(`${event} (${branchOf(rule)})`);
+        unsure.push(`"${event}" on ${branchOf(rule)} moves the issue to "${rule.stateName}" — check whether the wave's pull requests target that branch`);
+      }
+    }
+  }
+
+  const merge = rules.filter((r) => r.event === 'merge');
+  const mergeDefaults = merge.filter((r) => r.targetBranch === null);
+  const noMergeAction = () => {
+    if (hasDoneState) {
+      addNoAction('merge');
+    } else {
+      const found = mergeDefaults.length === 0 ? NO_RULE : NO_ACTION;
+      mismatches.push({ event: 'merge', found, expected: `${COMPLETED_STATE}, or states.doneState configured` });
+      why.push(`"merge" takes no action (${found}) and states.doneState is not configured — merged pull requests close no issue, and every row stays in review`);
+    }
+  };
+  if (mergeDefaults.length === 0) noMergeAction();
+  for (const rule of mergeDefaults) {
+    if (rule.stateName === null) {
+      noMergeAction();
+    } else if (rule.stateType === 'completed') {
+      // aligned: the merge closes the issue on its own.
+    } else if (typeof rule.stateType !== 'string') {
+      undecided.push('merge');
+      unsure.push(`"merge" moves the issue to "${rule.stateName}", whose state type did not come back — check that it is a completed state`);
+    } else {
+      mismatches.push({ event: 'merge', found: rule.stateName, expected: COMPLETED_STATE });
+      why.push(`on "merge" Linear moves the issue to "${rule.stateName}", which is not a completed state — a merged row's issue never reaches a terminal state that way`);
+    }
+  }
+  for (const rule of merge.filter((r) => r.targetBranch !== null)) {
+    if (rule.stateType === 'completed' || hasDoneState) continue;
+    undecided.push(`merge (${branchOf(rule)})`);
+    unsure.push(`"merge" on ${branchOf(rule)} ${rule.stateName === null ? 'takes no action' : `moves the issue to "${rule.stateName}", not a completed state`} — check whether the wave's pull requests target that branch`);
   }
 
   const quoted = (events: readonly string[]) => events.map((e) => `"${e}"`).join(', ');
   const notes: string[] = [];
   if (noAction.length > 0) {
-    notes.push(`Team-default rule(s) for ${quoted(noAction)} take no action (null target state) — not a mismatch, since they move nothing.`);
+    notes.push(`${quoted(noAction)} take no action (a null target state, or no team-default rule) — the aligned setting.`);
   }
-  const merge = defaults.filter((r) => r.event === 'merge');
-  if (merge.length > 0) {
-    notes.push(`"merge" reported, not graded: ${merge.map((r) => (r.stateName === null ? 'no action' : `"${r.stateName}"`)).join(', ')}.`);
-  }
-  const graded = new Set(GRADED_GIT_AUTOMATION_EVENTS.map((g) => g.event));
-  const unknown = [...new Set(defaults.map((r) => r.event).filter((e) => e !== 'merge' && !graded.has(e)))];
+  const known = new Set([...PRE_MERGE_GIT_AUTOMATION_EVENTS, 'merge']);
+  const unknown = [...new Set(rules.map((r) => r.event).filter((e) => !known.has(e)))];
   if (unknown.length > 0) {
     notes.push(`Event(s) ${quoted(unknown)} reported, not graded.`);
   }
-  if (branchScoped.length > 0) {
-    const patterns = branchScoped.map((r) => `"${r.event}" on ${r.targetBranch!.isRegex ? 'pattern' : 'branch'} "${r.targetBranch!.branchPattern}"`);
-    notes.push(`${branchScoped.length} branch-scoped rule(s) present and NOT graded (${patterns.join('; ')}) — a branch-scoped rule overrides the team default for PRs targeting that branch; ${byHand}`);
+  if (unsure.length > 0) {
+    notes.push(`Undecided: ${unsure.join('; ')}. ${byHand}`);
   }
   const tail = [...notes, GIT_AUTOMATION_ADVISORY].join(' ');
   const read = {
@@ -545,25 +597,23 @@ async function gitAutomationReading(
   };
 
   if (mismatches.length > 0) {
-    const each = mismatches.map((m) => `on "${m.event}" Linear moves the issue to "${m.found}", but this config expects "${m.expected}"`);
-    const also = undecided.length > 0 ? ` (and no team-default rule for ${quoted(undecided)}, which this reading cannot decide)` : '';
     return {
       status: 'misaligned',
       ...read,
-      detail: `Team PR-automation is misaligned with the configured claim states: ${each.join('; ')}${also}. A misaligned rule rewrites the claim ledger out of band when a PR opens or advances. Align it at ${GIT_AUTOMATION_SETTINGS_PATH}. ${tail}`,
+      detail: `Team PR-automation is misaligned: ${why.join('; ')}. Fix it at ${GIT_AUTOMATION_SETTINGS_PATH}. ${tail}`,
     };
   }
   if (undecided.length > 0) {
     return {
       status: 'abstain',
       ...read,
-      detail: `Cannot decide: no team-default rule for ${quoted(undecided)} — Linear may apply an implicit default for an event with no rule, and the API does not report what it is. ${byHand} ${tail}`,
+      detail: `Cannot decide: nothing is misaligned, but ${undecided.length} branch-scoped or untyped rule(s) depend on what the reading cannot see. ${tail}`,
     };
   }
   return {
     status: 'aligned',
     ...read,
-    detail: `Every graded event has a team-default PR-automation rule, and none moves the issue anywhere but the configured claim state (draft/start → "${states.inFlight}", review/mergeable → "${states.inReview}"). ${tail}`,
+    detail: `The four pre-merge events take no action, and ${hasDoneState ? `a merged row's issue reaches a terminal state (merge rule or states.doneState "${states.doneState}")` : 'the "merge" rule moves the issue to a completed state'}. ${tail}`,
   };
 }
 
@@ -915,7 +965,7 @@ export async function preflightStore(
     // answer), and advisory by construction, so `ok` above is computed from
     // `checks` alone exactly as it was before this field existed.
     goalBinding: goalBindingReading(config),
-    // ADR-0020 amendment 2026-09-25 — the Linear team's PR-automation rules,
+    // ADR-0020 amendments 2026-09-25/-27 — the Linear team's PR-automation rules,
     // advisory by construction exactly like `goalBinding`: `ok` above never
     // reads it.
     ...(s.kind === 'linear'

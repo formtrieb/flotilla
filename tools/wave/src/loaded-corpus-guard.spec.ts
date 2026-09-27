@@ -1244,6 +1244,7 @@ const LOADED_CORPUS_CEILING_BYTES = 1_278_000; // RAISED by issue #1051 — see 
 // headroom, up from row #1051's 639 B — and leaves this constant exactly where row #998 set it, for a
 // later ratchet row to lower. Shared standing load untouched (162,892 B — this row touches no
 // `wave-shared/` file).
+// NOT raised by issue #1056 (the `gitAutomation` reading regraded to ADR-0020's 2026-09-27 "No action" alignment): wave-setup's SKILL.md (−127 B) and setup-mechanics.md (+469 B) add 342 B net, re-measured at 1,277,691 B over the same 57 files (next full KB 1,278,000 = this value) — 309 B of headroom left; shared standing load untouched (162,892 B).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

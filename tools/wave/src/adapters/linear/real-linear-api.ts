@@ -100,7 +100,9 @@ const GITHUB_INTEGRATION_SERVICE = 'github';
  * false, so an archived rule is never read); `GitAutomationState.event:
  * GitAutomationStates!`, `.state: WorkflowState` (nullable = "take no action"),
  * `.targetBranch: GitAutomationTargetBranch` (nullable = the team default);
- * `GitAutomationTargetBranch.branchPattern: String!`, `.isRegex: Boolean!`.
+ * `GitAutomationTargetBranch.branchPattern: String!`, `.isRegex: Boolean!`;
+ * `WorkflowState.type: String!` — the state's category, read so the reading can
+ * grade `merge` against a `completed` state (ADR-0020 amendment 2026-09-27).
  *
  * UNPROVEN LIVE: the dispatch that wrote it had no Linear credential. The first
  * `store-preflight` on a linear-store consumer is the live gate — and because the
@@ -112,7 +114,7 @@ const TEAM_GIT_AUTOMATION_STATES_QUERY = `query TeamGitAutomationStates($teamId:
     gitAutomationStates(first: $first, after: $after) {
       nodes {
         event
-        state { name }
+        state { name type }
         targetBranch { branchPattern isRegex }
       }
       pageInfo { hasNextPage endCursor }
@@ -1554,6 +1556,9 @@ function toGitAutomationState(raw: Record<string, unknown>): LinearGitAutomation
   return {
     event: raw.event,
     stateName: typeof state?.name === 'string' ? state.name : null,
+    // Carried as the vendor's string, never thrown on (unlike `toStateType`):
+    // the reading is advisory, and an unknown category reads as undecided.
+    stateType: typeof state?.type === 'string' ? state.type : null,
     // A present-but-malformed branch object still marks the rule BRANCH-SCOPED:
     // reading it as `null` would promote it to a team default and grade it.
     targetBranch: branch
