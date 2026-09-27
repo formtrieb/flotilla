@@ -329,7 +329,7 @@ Each `VerifyProfile`:
 |---|---|---|
 | `name` | yes | string identifier for the profile |
 | `appliesTo` | yes | `string[]` of globs — the profile runs when any changed file matches |
-| `commands` | yes | `{ cwd?: string; command: string; needs?: VerifyCommandNeeds }[]` — run in order; first non-zero exit halts |
+| `commands` | yes | `{ cwd?: string; command: string; needs?: VerifyCommandNeeds; environmentNotes?: string[] }[]` — run in order; first non-zero exit halts |
 
 `cwd` is optional on each command; if absent, the command runs from the repo root.
 
@@ -342,6 +342,8 @@ Each command's `needs` (ADR-0049) is optional too, and declares what the command
 | `host` | literally `true` | an un-narrowable host capability — a daemon socket, a simulator, a device. There is no `false`: the key is present when the requirement exists and absent otherwise |
 
 Declare only what applies; at least one key must be present. A malformed declaration — an unknown key (a near-miss spelling such as `networks` included), a non-object `needs`, an empty object, an empty or non-string array entry, a `host` that is not literally `true` — fails at `config validate` time naming `verify.profiles[i].commands[j].needs` and the closed set, rather than surfacing five hours into an unattended wave as a gate nobody can answer. `writes` and `network` are scaffolded into the harness's sandbox block ([Sandbox capability scaffold](#sandbox-capability-scaffold-writesnetwork-from-declared-needs-adr-0049)); **`host` never is** — it cannot be narrowed to a path or a host, so it is provided operator-local only, never written into a tracked file.
+
+Beside `needs`, each command may carry `environmentNotes` (ADR-0049 Amendment 2026-09-27): what the command DOES inside the sandbox on this consumer's machine (`"esbuild exits 1 without output here"`), where `needs` is what it must reach. **Bound: at most 3 notes, each a non-empty string of at most 200 characters.** A non-array, an empty array, an empty note, a 4th note or a 201st character fails `config validate` and every load, naming `verify.profiles[i].commands[j].environmentNotes` and the command. Both briefs render a note beside its command, only when the row selects that command. A note explains a failure, never excuses one: a matching failure is still reported, citing the note. A harness-wide fact is not a note, and a write denial is a `writes` need.
 
 #### Measure before recording — resolution proven by execution, not inspection
 

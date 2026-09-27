@@ -77,6 +77,27 @@ export interface VerifyCommand {
    * existed.
    */
   needs?: VerifyCommandNeeds;
+  /**
+   * **Environment notes** (ADR-0049 Amendment 2026-09-27): observed facts about
+   * how THIS command behaves inside the sandbox a dispatched agent runs it in —
+   * a toolchain that exits 1 without output, a browser that will not start.
+   * Operator-authored, beside {@link needs}: `needs` is the capability half
+   * (what the command must reach), a note is the knowledge half (how it
+   * behaves once it runs). A note grants nothing, withholds nothing and changes
+   * no gate's outcome — it explains a failure, it never excuses one.
+   *
+   * **Bounded at load**: at most three notes, each a non-empty string of at
+   * most 200 characters (`loadWaveConfig` in `wave-config.ts` owns the
+   * refusal, exactly as it owns `needs`'). Every brief clause is paid per
+   * dispatch (ADR-0034), and the bound keeps a consumer's troubleshooting
+   * document from moving into the brief wholesale.
+   *
+   * **Optional, and additive.** A config that carries no notes anywhere loads,
+   * selects and composes byte-identically to how it did before this field
+   * existed. Like `needs`, it is passed through {@link verifyCommands}
+   * verbatim and is not part of the de-duplication key.
+   */
+  environmentNotes?: string[];
 }
 
 export interface VerifyProfile {
@@ -137,9 +158,10 @@ function deduplicationKey(cmd: VerifyCommand): string {
  * order) of the commands of every profile that matches at least one changed
  * file. No match anywhere → `[]` (the `none` profile).
  *
- * Each selected command is passed through **verbatim**, `needs` included — this
- * function selects, it never rewrites. The de-duplication key stays
- * `cwd + command` ({@link deduplicationKey}) and does NOT include `needs`, so
+ * Each selected command is passed through **verbatim**, `needs` and
+ * `environmentNotes` included — this function selects, it never rewrites. The
+ * de-duplication key stays `cwd + command` ({@link deduplicationKey}) and does
+ * NOT include `needs` (nor the notes, by the same first-profile-wins rule), so
  * two profiles declaring the same command with different needs still collapse
  * to one entry and the FIRST profile's declaration wins. That is deliberate rather than merged: a merge
  * rule is a decision ADR-0049 does not make, and the under-declared case has a

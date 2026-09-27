@@ -1223,6 +1223,7 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // by design): the one touched file, `reference/convention-05-sidecar-write-path.md` (+445 B, the
 // standing-load line above), re-measures the population at 1,274,718 B over the same 57 files (next
 // full KB 1,275,000 < this value) — 282 B of headroom left.
+// NOT raised by issue #1050 (`environmentNotes` documented beside `needs`): setup-mechanics.md adds 799 B, re-measured at 1,275,517 B over the same 57 files (next full KB 1,276,000 = this value) — 483 B of headroom left; shared standing load untouched (162,892 B).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

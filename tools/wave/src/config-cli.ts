@@ -4,7 +4,8 @@
  *
  * Store-INDEPENDENT: it calls loadWaveConfig (which validates `store`, `verify`
  * — including each command's ADR-0049 `needs` declaration against its closed set
- * of three — `cleanup`, the ADR-0032 `engine.cli` / `engine.install` bindings,
+ * of three and its `environmentNotes` against their bound of three notes of at
+ * most 200 characters, each refusal naming the command — `cleanup`, the ADR-0032 `engine.cli` / `engine.install` bindings,
  * the ADR-0012 `models` tier→model-id block and the ADR-0053
  * `landing.commitMessage` choice, whose value must be exactly `pr` or `host`)
  * but never buildStore, so it validates a `github` config too — buildStore throws
@@ -237,8 +238,9 @@ const VERIFY_KEYS: readonly string[] = ['profiles'];
 const VERIFY_PROFILE_KEYS: readonly string[] = ['name', 'appliesTo', 'commands'];
 // `needs` is deliberately absent from the walk below: its keys are a CLOSED set
 // the loader already refuses on (ADR-0049), and a warning beside a refusal would
-// be a second, weaker owner of one rule.
-const VERIFY_COMMAND_KEYS: readonly string[] = ['cwd', 'command', 'needs'];
+// be a second, weaker owner of one rule. `environmentNotes` (ADR-0049 Amendment
+// 2026-09-27) is the same case: the loader refuses every shape outside its bound.
+const VERIFY_COMMAND_KEYS: readonly string[] = ['cwd', 'command', 'needs', 'environmentNotes'];
 
 /** A JSON object — never an array, never `null`. The only shape with keys to check. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {

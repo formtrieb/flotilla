@@ -433,9 +433,72 @@ function validateVerifyNeeds(value: unknown, label: string): void {
   }
 }
 
+// ─── verify.commands[].environmentNotes — the knowledge half (ADR-0049 Amend. 2026-09-27) ──
+
+/** At most this many environment notes on one verify command (ADR-0049 Amendment 2026-09-27, decision 3). */
+const ENVIRONMENT_NOTES_MAX_COUNT = 3;
+/** At most this many characters (Unicode code points) in one environment note. */
+const ENVIRONMENT_NOTES_MAX_CHARS = 200;
+
+/** The bound, spelled out for the author of a refused config. */
+const ENVIRONMENT_NOTES_BOUND =
+  `environmentNotes is an optional array of at most ${ENVIRONMENT_NOTES_MAX_COUNT} non-empty strings, ` +
+  `each at most ${ENVIRONMENT_NOTES_MAX_CHARS} characters`;
+
+/**
+ * Validate one verify command's `environmentNotes` (ADR-0049 Amendment
+ * 2026-09-27, decision 3 — "bounded at load").
+ *
+ * Every brief clause is paid per dispatch (ADR-0034): a note renders in the
+ * Worker AND the Reviewer brief of every row whose change selects the command,
+ * so the bound is what keeps one consumer's troubleshooting document from
+ * moving into the brief wholesale. Each refusal names the command itself, not
+ * only its array index — the operator fixing it thinks in commands.
+ *
+ * Characters are counted as Unicode code points (`[...note].length`), so a note
+ * in a non-Latin script or carrying an emoji is not charged double for its
+ * surrogate pairs.
+ *
+ * An EMPTY array is refused, on the same reasoning as `"needs": {}`: it is
+ * reachable only by writing it out, it is indistinguishable in effect from
+ * omitting the key, and loading it silently would hide a note an author meant
+ * to write.
+ *
+ * @param value The raw `environmentNotes` value, unvalidated.
+ * @param label How to name the offending field in a thrown message.
+ * @param command The command's own text, or `undefined` when it has none.
+ */
+function validateEnvironmentNotes(value: unknown, label: string, command: unknown): void {
+  if (value === undefined) return;
+  const named =
+    typeof command === 'string' ? ` (on the verify command ${JSON.stringify(command)})` : '';
+  const refuse = (what: string): never => {
+    throw new Error(`${label}${named} ${what} — ${ENVIRONMENT_NOTES_BOUND} (ADR-0049)`);
+  };
+  if (!Array.isArray(value)) refuse('must be an array of strings');
+  const notes = value as unknown[];
+  if (notes.length === 0) {
+    refuse('carries no note (omit the key entirely for a command with nothing to note)');
+  }
+  if (notes.length > ENVIRONMENT_NOTES_MAX_COUNT) {
+    refuse(`carries ${notes.length} notes, more than ${ENVIRONMENT_NOTES_MAX_COUNT}`);
+  }
+  for (let i = 0; i < notes.length; i++) {
+    const note: unknown = notes[i];
+    if (typeof note !== 'string' || note.trim().length === 0) {
+      refuse(`[${i}] must be a non-empty string`);
+    }
+    const chars = [...(note as string)].length;
+    if (chars > ENVIRONMENT_NOTES_MAX_CHARS) {
+      refuse(`[${i}] is ${chars} characters, more than ${ENVIRONMENT_NOTES_MAX_CHARS}`);
+    }
+  }
+}
+
 /**
  * Walk a validated-enough `verify.profiles` array and hold every command's
- * `needs` to {@link validateVerifyNeeds}.
+ * `needs` to {@link validateVerifyNeeds} and its `environmentNotes` to
+ * {@link validateEnvironmentNotes}.
  *
  * Deliberately TOLERANT of everything else it walks past. A profile that is not
  * an object, or whose `commands` is not an array, has always loaded without
@@ -458,6 +521,11 @@ function validateVerifyProfileNeeds(profiles: readonly unknown[]): void {
       validateVerifyNeeds(
         (cmd as { needs?: unknown }).needs,
         `wave config "verify.profiles[${p}].commands[${c}].needs"`,
+      );
+      validateEnvironmentNotes(
+        (cmd as { environmentNotes?: unknown }).environmentNotes,
+        `wave config "verify.profiles[${p}].commands[${c}].environmentNotes"`,
+        (cmd as { command?: unknown }).command,
       );
     }
   }
@@ -1107,7 +1175,10 @@ export interface WaveConfig {
  * {@link validateVerifyProfileNeeds}: the declarable needs are a CLOSED set of
  * three, and an unknown key or a wrong value shape is refused with that set
  * named. The type lives in `verify.ts`; the refusal lives here, exactly as the
- * `verify.profiles` array rule already does.
+ * `verify.profiles` array rule already does. `environmentNotes` (ADR-0049
+ * Amendment 2026-09-27) is bounded on the same walk by
+ * {@link validateEnvironmentNotes}: at most three non-empty notes of at most
+ * 200 characters each, refused with the command named.
  *
  * `cleanup.disposableNames` (issue #115) is validated here too, through the
  * engine's own {@link normalizeDisposableNames} — the SAME rule the cleanup

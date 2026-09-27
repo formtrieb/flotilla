@@ -341,6 +341,50 @@ describe('config validate — verify command needs (ADR-0049)', () => {
   });
 });
 
+// ── environment notes at the CLI seam (ADR-0049 Amendment 2026-09-27) ────────
+//
+// The bound is `loadWaveConfig`'s; what this block pins is that `config
+// validate` refuses a config that breaks it, naming the command, with this
+// verb's own refusal code for an invalid config (1 — see the module docblock:
+// 2 is this verb's USAGE code). The `compose-driver` load path, whose code for
+// an unloadable config is 2, is pinned in `compose-driver.spec.ts`.
+
+describe('config validate — verify command environmentNotes (ADR-0049 Amendment 2026-09-27)', () => {
+  function writeWithNotes(environmentNotes: unknown): string {
+    return writeConfig({
+      store: { kind: 'github' },
+      verify: {
+        profiles: [
+          { name: 'app', appliesTo: ['app/**'], commands: [{ command: 'npm run build', environmentNotes }] },
+        ],
+      },
+    });
+  }
+
+  it.each([
+    ['4 notes', ['a', 'b', 'c', 'd'], /carries 4 notes, more than 3/],
+    ['a 201-character note', ['x'.repeat(201)], /\[0\] is 201 characters, more than 200/],
+    ['a non-array value', 'esbuild exits 1', /must be an array of strings/],
+    ['an empty-string note', [''], /\[0\] must be a non-empty string/],
+  ])('refuses %s, naming the command', (_what, notes, reason) => {
+    expect(runConfig(['validate', writeWithNotes(notes)])).toBe(1);
+    expect(stderrBuf).toContain('verify.profiles[0].commands[0].environmentNotes');
+    expect(stderrBuf).toContain('"npm run build"');
+    expect(stderrBuf).toMatch(reason);
+    expect(stdoutBuf).toBe(''); // never both "ok" and an error
+  });
+
+  // NEGATIVE CONTROL: the exit code turns on the notes alone — 3 notes of
+  // exactly 200 characters validate, draw no unknown-key warning, and leave the
+  // summary line exactly what a notes-free config prints.
+  it('NEGATIVE CONTROL: 3 notes of exactly 200 characters validate with no warning', () => {
+    const path = writeWithNotes(['a'.repeat(200), 'b'.repeat(200), 'c'.repeat(200)]);
+    expect(runConfig(['validate', path])).toBe(0);
+    expect(stderrBuf).toBe('');
+    expect(stdoutBuf).toBe(`ok: "${path}" is a valid wave config (store.kind=github, verify: 1 profile(s))\n`);
+  });
+});
+
 // ── the non-fatal findings the loader used to read past (issue #761) ─────────
 //
 // Fifteen scratch configs measured at 2.4.0 all printed `ok`: a typo at top
