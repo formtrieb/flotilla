@@ -26,6 +26,7 @@ import {
   metAcIndexes,
   neutralizeForeignTrackerIds,
   renderVerdictSection,
+  undeclaredReviewerVerdictKeys,
   validateReviewerVerdict,
   type DocumentedFormComparison,
   type DocumentedFormTrigger,
@@ -1201,5 +1202,63 @@ describe('renderVerdictSection — the documented-form section', () => {
     expect(out.indexOf('**Documented-form comparison**')).toBeLessThan(
       out.indexOf('**Advisories:**'),
     );
+  });
+});
+
+// ─── the write-only unknown-key predicate (the Scribe fidelity gate) ────────
+//
+// `write-verdict` refuses on a non-empty answer. `acVerification` is what the
+// PR body's `## Reviewer verdict` section renders from, so its rows are closed
+// exactly as the schema closes them. `validateReviewerVerdict` — shared with the
+// sidecar reader and the Reviewer-only compose — stays permissive.
+
+describe('undeclaredReviewerVerdictKeys — every key REVIEWER_VERDICT_JSON_SCHEMA does not declare', () => {
+  const withComparison = (): Record<string, unknown> => ({
+    ...validVerdict(),
+    documentedFormComparison: {
+      trigger: 'worker-declared',
+      sources: ['https://example.invalid/doc'],
+      divergences: [{ description: 'a departure', deliberate: true }],
+    },
+  });
+
+  it('NEGATIVE CONTROL — a well-formed verdict, comparison included, names nothing', () => {
+    expect(undeclaredReviewerVerdictKeys(validVerdict())).toEqual([]);
+    expect(undeclaredReviewerVerdictKeys(withComparison())).toEqual([]);
+  });
+
+  it('names an undeclared TOP-LEVEL key', () => {
+    expect(undeclaredReviewerVerdictKeys({ ...validVerdict(), summary: 'x' })).toEqual(['summary']);
+  });
+
+  it('names an undeclared key inside an AC-verification row, with its index', () => {
+    const payload = {
+      ...validVerdict(),
+      acVerification: [
+        { ac: '#1', met: 'met', evidence: 'a' },
+        { ac: '#2', met: 'met', evidence: 'b', note: 'paraphrased' },
+      ],
+    };
+    expect(undeclaredReviewerVerdictKeys(payload)).toEqual(['acVerification[1].note']);
+  });
+
+  it('names an undeclared key inside the documented-form comparison and inside one of its divergences', () => {
+    const payload = withComparison();
+    (payload.documentedFormComparison as Record<string, unknown>).verdict = 'fine';
+    ((payload.documentedFormComparison as { divergences: Array<Record<string, unknown>> }).divergences[0]).severity =
+      'low';
+    expect(undeclaredReviewerVerdictKeys(payload).sort()).toEqual([
+      'documentedFormComparison.divergences[0].severity',
+      'documentedFormComparison.verdict',
+    ]);
+  });
+
+  it('the shared structural validator stays PERMISSIVE about the same extra keys', () => {
+    const payload = {
+      ...validVerdict(),
+      summary: 'x',
+      acVerification: [{ ac: '#1', met: 'met', evidence: 'a', note: 'y' }],
+    };
+    expect(validateReviewerVerdict(payload)).toEqual({ valid: true, errors: [] });
   });
 });

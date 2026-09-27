@@ -352,6 +352,65 @@ export function validateWorkerReport(value: unknown): SchemaValidation {
   return { valid: errors.length === 0, errors };
 }
 
+// ─── the write-time unknown-key refusal (the sidecar write verbs only) ───────
+
+/**
+ * Every key in `value` that a CLOSED object node of `schema`
+ * (`additionalProperties: false`) does not declare, as a path —
+ * `verifyOutput`, `filesChanged.extra`, `acVerification[2].note`. `[]` when
+ * there is none.
+ *
+ * Walks the schema literal itself, so the set of declared keys has ONE owner:
+ * a property added to a schema is accepted here the moment it is declared
+ * there. It descends into every declared property present in `value` and into
+ * every element of an array whose schema names `items`; it judges only KEYS,
+ * never types — a value of the wrong shape is the structural validator's
+ * finding, and is skipped here rather than reported twice.
+ *
+ * **Deliberately NOT part of {@link validateWorkerReport}.** The structural
+ * validators are shared with the sidecar READER (`sidecar.ts`) and with the
+ * Reviewer-only compose, and both must go on reading historical sidecars that
+ * carry a key no schema declares — a record already on disk is evidence, and
+ * refusing to read it would cost a resume the only copy. The refusal belongs at
+ * the one point where a NEW record is made durable: `write-report` /
+ * `write-verdict`, which call this beside the validator and refuse on either.
+ * The live case it closes: a Scribe that re-transcribed a report added a
+ * top-level `verifyOutput`, and the write verb accepted it although the schema
+ * the agent boundary enforces is closed.
+ */
+export function undeclaredSchemaKeys(schema: unknown, value: unknown, path = ''): string[] {
+  const node = schema as {
+    additionalProperties?: boolean;
+    properties?: Record<string, unknown>;
+    items?: unknown;
+  };
+  if (Array.isArray(value)) {
+    if (node.items === undefined) return [];
+    return value.flatMap((element, i) => undeclaredSchemaKeys(node.items, element, `${path}[${i}]`));
+  }
+  if (!isPlainObject(value) || node.properties === undefined) return [];
+  const found: string[] = [];
+  for (const key of Object.keys(value)) {
+    const at = path === '' ? key : `${path}.${key}`;
+    if (!Object.prototype.hasOwnProperty.call(node.properties, key)) {
+      if (node.additionalProperties === false) found.push(at);
+      continue;
+    }
+    found.push(...undeclaredSchemaKeys(node.properties[key], value[key], at));
+  }
+  return found;
+}
+
+/**
+ * The keys of a WorkerReport payload that {@link WORKER_REPORT_JSON_SCHEMA}
+ * does not declare — at the top level and inside the closed `filesChanged`
+ * object. The write-only predicate {@link undeclaredSchemaKeys} documents;
+ * `write-report` refuses on a non-empty answer.
+ */
+export function undeclaredWorkerReportKeys(value: unknown): string[] {
+  return undeclaredSchemaKeys(WORKER_REPORT_JSON_SCHEMA, value);
+}
+
 // ─── the finishing-outcome prUrl gate (issue #556, ADR-0034) ─────────────────
 
 /**

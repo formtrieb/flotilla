@@ -47,6 +47,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { main, mainAsync, runDorById, findRepoRoot, verbContracts } from './cli';
+import { canonicalDigest } from './canonical-json';
 // Issue #758: the roster is rendered FROM the contracts, so its expectations are
 // derived from the contracts too — `canonicalFlagTokens` is the engine's own
 // answer to "which spellings does this verb declare", never a list retyped here.
@@ -9617,5 +9618,65 @@ describe('worktree-cleanup — stamped Reviewer probe checkouts under `probes` (
     expect(stdoutBuf).toContain('probes');
     expect(stdoutBuf).toContain('--probes-only');
     expect(stdoutBuf).toContain('live-row and unknown-wave');
+  });
+});
+
+// ─── the write verbs' --expect-digest flag, through the ROUTER ──────────────
+//
+// route-cli.spec.ts drives the runners directly; this pins that the flag is
+// reachable through `main()` — declared on both contracts, so the router's
+// undeclared-flag refusal does not fire on it — and that the roster names it.
+
+describe('write-report / write-verdict --expect-digest through main() (the Scribe fidelity digest)', () => {
+  const report = {
+    outcome: 'done',
+    issue: '7',
+    branch: 'wave/7-x',
+    commitShas: ['abc1234'],
+    prUrl: 'https://github.com/example/repo/pull/7',
+    filesChanged: { new: 0, modified: 1, renamed: 0 },
+    tests: '1/1 green',
+    lint: 'clean',
+    judgmentCalls: ['one call'],
+    reviewerFocusItems: [],
+  };
+  const verdict = {
+    verdict: 'approve',
+    branchReviewed: 'wave/7-x',
+    riskClass: 'mechanical',
+    workerReportDigest: '1/1 green',
+    acVerification: [{ ac: '#1', met: 'met', evidence: 'x' }],
+    reviewerFocusItems: [],
+  };
+
+  it('both write verbs accept the flag: a matching digest writes (exit 0), a mismatching one refuses (exit 1)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cli-digest-'));
+    try {
+      for (const [verb, fileFlag, dirFlag, payload] of [
+        ['write-report', '--report-file', '--reports-dir', report],
+        ['write-verdict', '--verdict-file', '--verdicts-dir', verdict],
+      ] as const) {
+        const f = join(dir, `${verb}.json`);
+        const target = join(dir, verb);
+        writeFileSync(f, JSON.stringify(payload));
+        const args = (digest: string) => [verb, fileFlag, f, dirFlag, target, '--id', '7', '--iter', '1', '--expect-digest', digest];
+        expect(main(args('0000000000000000')), `${verb} mismatch`).toBe(1);
+        expect(existsSync(join(target, '7-1.md'))).toBe(false);
+        expect(stderrBuf).toContain('payload digest mismatch');
+        expect(main(args(canonicalDigest(payload))), `${verb} match`).toBe(0);
+        expect(existsSync(join(target, '7-1.md'))).toBe(true);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the roster line of each write verb names --expect-digest', () => {
+    expect(main([])).toBe(2);
+    for (const verb of ['write-report', 'write-verdict']) {
+      const line = stderrBuf.split('\n').find((l) => l.includes(`flotilla-engine ${verb} `));
+      expect(line, verb).toBeDefined();
+      expect(line).toContain('--expect-digest');
+    }
   });
 });

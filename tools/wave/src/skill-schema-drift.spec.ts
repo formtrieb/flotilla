@@ -1445,6 +1445,20 @@ describe('skill-schema-drift — the Scribe brief carries provenance + the filin
     expect(region).not.toMatch(/same workflow run, one stage\s+earlier, journal-recorded/);
     expect(region).not.toMatch(/review is not the\s+Scribe's/);
   });
+
+  it('embeds ONE serialisation and digests THAT one — the brief, the payload line and the flag cannot disagree', () => {
+    const region = scribeBriefBody(driverJs);
+    // One serialisation, reused: the payload line is `${embedded}`, and the
+    // digest is taken over `embedded` parsed back — what a faithful Scribe's
+    // file parses to — never over a second `JSON.stringify(payload)`.
+    expect(region).toContain('const embedded = JSON.stringify(payload)');
+    expect(region).toContain('const digest = canonicalDigest(JSON.parse(embedded))');
+    expect(region).toMatch(/^\$\{embedded\}$/m);
+    expect(region).not.toContain('${JSON.stringify(payload)}');
+    // The flag rides both kinds' write commands and is named as not the Scribe's to vary.
+    expect(region.match(/--iter \$\{iter\} --expect-digest \$\{digest\}`/g)).toHaveLength(2);
+    expect(region).toMatch(/It is not yours to\s+remove or change/);
+  });
 });
 
 describe('skill-schema-drift — the classifier refusal is documented as an absorbed failure class, with its datum, tripwire, and recurrence ledger (issue #577)', () => {

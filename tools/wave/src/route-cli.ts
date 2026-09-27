@@ -42,8 +42,32 @@
  *       or that a FINISHING report reached the write with no usable `prUrl`
  *       (issue #556 — a finding about the report, never a refusal of it);
  *       a `warning:` line means MISNAMED litter was found in the target dir.
- *   1 — invalid payload / `report.issue` names a different row than --id (NOTHING written)
+ *   1 — invalid payload (including a key the canonical schema does not declare,
+ *       at the top level or inside one of its closed nested objects) /
+ *       `report.issue` names a different row than --id / the payload's canonical
+ *       digest differs from `--expect-digest` (NOTHING written)
  *   2 — usage / unreadable-or-unparseable <json-file> / a --id that is not a bare id
+ *       / an `--expect-digest` value that is not a digest
+ *
+ * ## Why the write verbs are stricter than the reader (the Scribe fidelity gates)
+ *
+ * The Scribe stage copies a payload it was handed into a file and runs one of
+ * these verbs on it. In one wave its copy disagreed with the agent's returned
+ * payload in four of eight rows — an extra top-level key no schema declares, and
+ * reworded `judgmentCalls`, `reviewerFocusItems` and `acVerification` — and the
+ * verb wrote every paraphrase and exited 0. Two gates close that, both HERE and
+ * nowhere else, so the reader and the shared structural validators stay exactly
+ * as permissive about a historical sidecar as they were:
+ *
+ *  - **Unknown keys are refused**, always: the schemas the agent boundary
+ *    enforces are closed (`additionalProperties: false`), and a record this verb
+ *    makes durable is held to the same shape.
+ *  - **`--expect-digest <digest>`** refuses a payload whose `canonicalDigest`
+ *    (`canonical-json.ts`) differs from the one the driver computed over the
+ *    payload it embedded in the Scribe's brief, and names both. The digest is
+ *    taken over the payload AS READ, before `report.issue` is normalized, so a
+ *    faithful copy always matches. A refused Scribe returns not-ok, and routing's
+ *    existing recovery rewrites the sidecar from the in-band payload.
  *
  * ## Why `--id` is validated and `report.issue` is repaired (issue #138)
  *
@@ -72,10 +96,12 @@ import { verdictToRouting, type Verdict } from './verdict-to-event';
 import {
   finishingReportLacksUsablePrUrl,
   outcomeToEvent,
+  undeclaredWorkerReportKeys,
   validateWorkerReport,
   type WorkerOutcome,
 } from './worker-report-schema';
-import { validateReviewerVerdict } from './reviewer-verdict-schema';
+import { undeclaredReviewerVerdictKeys, validateReviewerVerdict } from './reviewer-verdict-schema';
+import { CANONICAL_DIGEST_SHAPE, canonicalDigest } from './canonical-json';
 import {
   bareIssueIdViolation,
   findMisnamedSidecars,
@@ -182,6 +208,18 @@ const ROUTE_OUTCOME_SHAPE =
   '{ type: <warn>, reason } | { type: <noop> }';
 
 /**
+ * What both write verbs' `--help` says about the two fidelity gates — the
+ * unknown-key refusal (always on) and `--expect-digest` (opt-in). Shared because
+ * the two verbs enforce them identically; see {@link runWriteSidecar}.
+ */
+const WRITE_FIDELITY_NOTES: readonly string[] = [
+  '  A key the canonical schema does not declare — top level, or inside one of its closed',
+  '  nested objects — is refused (exit 1, nothing written), with or without --expect-digest.',
+  '  --expect-digest <digest> refuses (exit 1, nothing written) a payload whose canonical',
+  '  digest (key-order independent, computed over the payload as read) differs, naming both.',
+];
+
+/**
  * The six verbs this module runs, each declaring its own contract beside its own
  * runner (ADR-0051 decision 2).
  *
@@ -268,6 +306,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { canonical: '--reports-dir', aliases: ['--dir'], value: 'one', valueType: 'dir', required: true },
       { canonical: '--id', value: 'one', valueType: 'id', required: true },
       { canonical: '--iter', value: 'one', valueType: 'int', required: true },
+      { canonical: '--expect-digest', value: 'one', valueType: 'text', placeholder: '<digest>' },
     ],
     positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
     output: 'prose',
@@ -275,6 +314,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     notes: [
       '  --dir is accepted as an alias of --reports-dir. The payload file is named EITHER',
       '  by --report-file or as the leading positional — never both (a mixed call is a usage error).',
+      ...WRITE_FIDELITY_NOTES,
     ],
     outputNote: 'text (the written file path), not JSON',
     json: jsonNote('write-report', 'the same path, with the id and iteration it was filed under', [
@@ -288,6 +328,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { canonical: '--verdicts-dir', aliases: ['--dir'], value: 'one', valueType: 'dir', required: true },
       { canonical: '--id', value: 'one', valueType: 'id', required: true },
       { canonical: '--iter', value: 'one', valueType: 'int', required: true },
+      { canonical: '--expect-digest', value: 'one', valueType: 'text', placeholder: '<digest>' },
     ],
     positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
     output: 'prose',
@@ -295,6 +336,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     notes: [
       '  --dir is accepted as an alias of --verdicts-dir. The payload file is named EITHER',
       '  by --verdict-file or as the leading positional — never both (a mixed call is a usage error).',
+      ...WRITE_FIDELITY_NOTES,
     ],
     outputNote: 'text (the written file path), not JSON',
     json: jsonNote('write-verdict', 'the same path, with the id and iteration it was filed under', [
@@ -491,6 +533,13 @@ interface WriteSidecarSpec {
   kind: 'report' | 'verdict';
   validate: (v: unknown) => { valid: boolean; errors: string[] };
   /**
+   * The write-only unknown-key predicate — every key the canonical schema's
+   * closed object nodes do not declare, as a path. Kept OUT of `validate`,
+   * which the sidecar reader shares and which must stay permissive about a
+   * historical record (`undeclaredSchemaKeys` in worker-report-schema.ts).
+   */
+  undeclaredKeys: (v: unknown) => string[];
+  /**
    * Report-only: reconcile the payload's `issue` field with `--id` at WRITE
    * time. Returns the payload to render (possibly with `issue` normalized to
    * the bare `--id`) plus an optional loud notice, or an error to refuse on.
@@ -618,6 +667,20 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     );
     return 2;
   }
+  const expectedDigest = flag(args, contract, 'expect-digest');
+  if (expectedDigest === undefined && hasFlag(contract, args, 'expect-digest')) {
+    process.stderr.write(
+      `error: ${spec.label}: --expect-digest takes the digest as its value — nothing written.\n`,
+    );
+    return 2;
+  }
+  if (expectedDigest !== undefined && !CANONICAL_DIGEST_SHAPE.test(expectedDigest)) {
+    process.stderr.write(
+      `error: ${spec.label}: --expect-digest ${JSON.stringify(expectedDigest)} is not a digest ` +
+        '(16 lowercase hex digits) — nothing written. Pass the value the driver rendered, verbatim.\n',
+    );
+    return 2;
+  }
   let value: unknown;
   try {
     value = JSON.parse(readFileSync(file, 'utf-8'));
@@ -625,12 +688,41 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     process.stderr.write(`error: cannot read/parse ${file}: ${(err as Error).message}\n`);
     return 2;
   }
+  // The structural validator (shared with the reader, so permissive about
+  // extra keys) and the write-only unknown-key predicate, reported together:
+  // one refusal, every fault in it.
   const result = spec.validate(value);
-  if (!result.valid) {
+  const undeclared = spec.undeclaredKeys(value);
+  const errors = [
+    ...result.errors,
+    ...undeclared.map(
+      (key) => `undeclared key ${JSON.stringify(key)} — the ${spec.heading} schema declares no such field`,
+    ),
+  ];
+  if (errors.length > 0) {
     process.stderr.write(
-      `invalid ${spec.label} payload — nothing written:\n  - ${result.errors.join('\n  - ')}\n`,
+      `invalid ${spec.label} payload — nothing written:\n  - ${errors.join('\n  - ')}\n`,
     );
     return 1;
+  }
+  // The fidelity digest, over the payload AS READ — before `reconcile` may
+  // normalize a decorated `issue` — so a faithful transcription of the payload
+  // the driver handed over always matches, decoration and all.
+  if (expectedDigest !== undefined) {
+    const actualDigest = canonicalDigest(value);
+    if (actualDigest !== expectedDigest) {
+      process.stderr.write(
+        `error: ${spec.label}: payload digest mismatch — nothing written.\n` +
+          `  expected (--expect-digest): ${expectedDigest}\n` +
+          `  actual (the payload as read from ${JSON.stringify(file)}): ${actualDigest}\n` +
+          '  The payload file does not hold the payload that digest was computed over: it was\n' +
+          '  re-typed, reworded or re-ordered on the way to disk. Re-write it from the original,\n' +
+          '  byte-for-byte, and run the SAME command again — never drop or change --expect-digest\n' +
+          '  to get past this; a write that has to lose the check to succeed is the paraphrase\n' +
+          '  it exists to stop.\n',
+      );
+      return 1;
+    }
   }
   let payload = value;
   if (spec.reconcile) {
@@ -807,6 +899,7 @@ export function runWriteReport(args: string[]): number {
     heading: 'WorkerReport',
     kind: 'report',
     validate: validateWorkerReport,
+    undeclaredKeys: undeclaredWorkerReportKeys,
     reconcile: reconcileReportIssue,
     postWriteNotice: noticeMissingPrUrl,
   });
@@ -820,5 +913,6 @@ export function runWriteVerdict(args: string[]): number {
     heading: 'ReviewerVerdict',
     kind: 'verdict',
     validate: validateReviewerVerdict,
+    undeclaredKeys: undeclaredReviewerVerdictKeys,
   });
 }

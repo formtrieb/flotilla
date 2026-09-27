@@ -154,6 +154,44 @@ const SCRIBE_RESULT_SCHEMA = {
   },
 }
 
+// ── inlined from the engine (copy of canonical-json.ts — the Scribe fidelity digest) ──
+// Each Scribe brief embeds one payload and renders its write command with
+// `--expect-digest <digest>`, the digest of exactly that embedded payload. The
+// write verb recomputes it over the file the Scribe wrote and refuses a mismatch
+// (exit 1, nothing written, both digests named) — so a Scribe that re-transcribed
+// the payload instead of copying it fails loud and returns not-ok, and routing's
+// existing recovery rewrites the sidecar from the in-band payload. This script
+// can import nothing, so the engine's helper is COPIED here, not referenced:
+// keys sorted at every depth, FNV-1a 64-bit over the UTF-8 bytes of that form.
+// An integrity check against paraphrase, not a security one — no crypto needed.
+// `canonical-json.spec.ts` evaluates the region between the two markers below and
+// pins it to the engine's `canonicalDigest` over a shared fixture set; change one
+// without the other and that spec fails.
+// CANONICAL-DIGEST:BEGIN
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+function canonicalDigest(value) {
+  const text = canonicalJson(value)
+  let hash = BigInt('0xcbf29ce484222325')
+  const prime = BigInt('0x100000001b3')
+  const eat = (byte) => { hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * prime) }
+  for (const ch of text) {
+    let cp = ch.codePointAt(0)
+    if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd
+    if (cp < 0x80) { eat(cp) }
+    else if (cp < 0x800) { eat(0xc0 | (cp >> 6)); eat(0x80 | (cp & 0x3f)) }
+    else if (cp < 0x10000) { eat(0xe0 | (cp >> 12)); eat(0x80 | ((cp >> 6) & 0x3f)); eat(0x80 | (cp & 0x3f)) }
+    else { eat(0xf0 | (cp >> 18)); eat(0x80 | ((cp >> 12) & 0x3f)); eat(0x80 | ((cp >> 6) & 0x3f)); eat(0x80 | (cp & 0x3f)) }
+  }
+  return hash.toString(16).padStart(16, '0')
+}
+// CANONICAL-DIGEST:END
+
 // ── Scribe compose-time constants (Coordinator-filled, like depsSetup) ──
 // REPO_ROOT is the one ABSOLUTE-by-necessity constant: Scribes run in the
 // session cwd (no worktree isolation), so their brief carries this literal
@@ -1258,10 +1296,17 @@ function scribeBrief(kind, issue, iter, payload) {
   // unquoted interpolation breaks on it silently). Hoisting the path into a JS
   // const would be an unquoted occurrence even though every SHELL position it
   // reaches is quoted, so it stays inside the quotes the invariant can see.
+  //
+  // `embedded` is the ONE serialisation this brief carries, and the digest is
+  // taken over it parsed back — exactly what the verb will read from a faithful
+  // copy — rather than over `payload` itself, so a value JSON cannot carry (an
+  // `undefined` field) can never make a faithful Scribe's write mismatch.
+  const embedded = JSON.stringify(payload)
+  const digest = canonicalDigest(JSON.parse(embedded))
   const writeCall =
     kind === 'report'
-      ? `${WAVE_CLI} write-report --report-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --reports-dir "${dir}" --id ${issue.id} --iter ${iter}`
-      : `${WAVE_CLI} write-verdict --verdict-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --verdicts-dir "${dir}" --id ${issue.id} --iter ${iter}`
+      ? `${WAVE_CLI} write-report --report-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --reports-dir "${dir}" --id ${issue.id} --iter ${iter} --expect-digest ${digest}`
+      : `${WAVE_CLI} write-verdict --verdict-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --verdicts-dir "${dir}" --id ${issue.id} --iter ${iter} --expect-digest ${digest}`
   // The producing agent's OWN pipeline label — Stage 1 (`worker:<id>`) for a
   // report, Stage 3 (`review:<id>`) for a verdict — always the stage
   // immediately before this Scribe's own in the SAME pipeline() fan-out
@@ -1395,14 +1440,19 @@ normalizes that one itself and tells you it did.)
    NOT apply) was blocked as expected, confirming the harness can observe a
    block and the all-pass result above is not an artifact of a check that
    cannot fail.
-${JSON.stringify(payload)}
+${embedded}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
    ${writeCall}
-   (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, or a payload naming a DIFFERENT row than --id; exit 2 → usage/unreadable, or a --id that is not a bare id)
+   (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, a key the schema does not declare, a payload naming a DIFFERENT row than --id, or a digest mismatch; exit 2 → usage/unreadable, or a --id that is not a bare id)
    Every path in that command is absolute and shell-quoted; nothing in it depends on a
    previous call having moved you anywhere.
-4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same sidecar directory, same --iter. If it fails again, report the failure; never vary an argument to buy a zero.
+   **\`--expect-digest ${digest}\` is the digest of the payload line above, computed by the
+   script that handed it to you.** The verb recomputes it over the file you wrote and refuses
+   a mismatch, naming both digests: a mismatch means your file is NOT that line byte-for-byte —
+   a reworded list element, a dropped or added field, a re-typed value. It is not yours to
+   remove or change, exactly as \`--id\` is not.
+4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same sidecar directory, same --iter, same --expect-digest (on a digest mismatch, re-write the payload file from the line above first). If it fails again, report the failure; never vary an argument to buy a zero.
 Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure — and the step-1 cwd mismatch too, if there was one>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim, plus a \`cwd-mismatch:\` line if step 1 found one — a normalized decoration, a misnamed leftover in the sidecar dir, or a write made from the wrong cwd is a finding the Coordinator's routing step must not lose, and an exit-0 run is exactly where it would otherwise be dropped> }.`
 }
 

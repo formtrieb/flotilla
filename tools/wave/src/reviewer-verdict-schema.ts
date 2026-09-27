@@ -36,6 +36,7 @@
 import { RISK_VALUES, type Risk } from './header-parser';
 import { VERDICT_VALUES, type Verdict } from './verdict-to-event';
 import type { SchemaValidation } from './types';
+import { undeclaredSchemaKeys } from './worker-report-schema';
 
 // ─── enums local to the Verdict shape ───────────────────────────────────────
 
@@ -615,6 +616,24 @@ export function validateReviewerVerdict(value: unknown): SchemaValidation {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+/**
+ * The keys of a ReviewerVerdict payload that {@link REVIEWER_VERDICT_JSON_SCHEMA}
+ * does not declare — at the top level, inside every `acVerification` row, and
+ * inside the `documentedFormComparison` block and each of its `divergences`:
+ * every object node the schema closes.
+ *
+ * WRITE-ONLY, exactly like its report twin (`undeclaredSchemaKeys`, whose
+ * docblock carries the reason): {@link validateReviewerVerdict} stays as
+ * permissive as it was, because the sidecar reader and the Reviewer-only
+ * compose share it and must go on reading a historical verdict that carries an
+ * extra key. `write-verdict` refuses on a non-empty answer. `acVerification` is
+ * the field the PR body's `## Reviewer verdict` section is rendered from, so a
+ * paraphrased row is the one this reaches first.
+ */
+export function undeclaredReviewerVerdictKeys(value: unknown): string[] {
+  return undeclaredSchemaKeys(REVIEWER_VERDICT_JSON_SCHEMA, value);
 }
 
 /**

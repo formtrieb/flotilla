@@ -761,7 +761,30 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
     gitRemoteUrl:
       "Reads `git remote get-url origin`. Exported so route-tuple's default remote is literally the same read `host-pr` performs rather than a second spawn that could disagree about the remote name; a consumer passes `--remote` or lets the verb read it.",
   },
+  // ─── the Scribe fidelity gates (the sidecar write verbs) ──────────────────
+  //
+  // The same caveat the blocks above state: `src/index.ts` and this file are
+  // outside the declaring row's Files globs, and root-exporting these would mint
+  // a semver commitment no acceptance criterion asked for. A consumer meets both
+  // gates as the `write-report`/`write-verdict` VERBS — the unknown-key refusal
+  // and the `--expect-digest` flag — never as an import.
+  './canonical-json': {
+    canonicalJson:
+      "The ONE key-sorted canonical form of a JSON value. Exported for its two in-engine callers — route-tuple's sidecar-divergence check (which carried a private copy until the digest needed the same form) and canonicalDigest beside it — so the equality the repair compares by and the form the digest hashes cannot drift apart.",
+    canonicalDigest:
+      "The fidelity digest `write-report`/`write-verdict --expect-digest` compares against. Its single engine caller is route-cli's write body; the shipped driver carries an inlined copy (it can import nothing), pinned to this one by canonical-json.spec.ts's parity fixtures. A consumer drives it through the verb flag.",
+    CANONICAL_DIGEST_SHAPE:
+      'The 16-lowercase-hex shape canonicalDigest always has — the write verbs refuse an `--expect-digest` value of any other shape as a usage error. Module-local for the same reason canonicalDigest is.',
+  },
+  './reviewer-verdict-schema': {
+    undeclaredReviewerVerdictKeys:
+      "The write-only unknown-key predicate `write-verdict` refuses on. Kept OUT of validateReviewerVerdict (which IS root-exported) because the sidecar reader shares that validator and must go on reading a historical verdict carrying an extra key; a consumer meets the refusal as the verb's exit 1.",
+  },
   './worker-report-schema': {
+    undeclaredSchemaKeys:
+      "The schema walker both write-only unknown-key predicates share — every key a closed (`additionalProperties: false`) object node does not declare, as a path. Exported for its one sibling caller, reviewer-verdict-schema.ts, so the report and verdict refusals read the schema literal the same way.",
+    undeclaredWorkerReportKeys:
+      "The write-only unknown-key predicate `write-report` refuses on — module-local for the same reason as its verdict twin in `./reviewer-verdict-schema` above: validateWorkerReport stays permissive for the reader.",
     FINISHING_OUTCOMES:
       "The `done`/`done-with-concerns` partition of WORKER_OUTCOME_VALUES (which IS root-exported). It exists so the sidecar-write gate and the schema's own anyOf branch read ONE set rather than two hand-kept lists; a consumer asking the same question already has outcomeToEvent(o) === 'worker-done'.",
     finishingReportLacksUsablePrUrl:

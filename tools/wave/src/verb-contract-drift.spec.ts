@@ -856,3 +856,29 @@ describe('verb-contract drift — a JSON verb declares the shape of its JSON', (
     expect(prose.some((l) => l.trimStart() === '--json: { a, b }')).toBe(true);
   });
 });
+
+// ─── the write verbs' fidelity digest flag ───────────────────────────────────
+
+describe('verb-contract drift — --expect-digest is one flag, declared the same way on both write verbs', () => {
+  it('both write verbs declare it: optional, one value, value type text, no alias', () => {
+    for (const verb of ['write-report', 'write-verdict']) {
+      const f = AGGREGATE[verb].flags.find((x) => x.canonical === '--expect-digest');
+      expect(f, `${verb} must declare --expect-digest`).toBeDefined();
+      expect(f).toMatchObject({ value: 'one', valueType: 'text' });
+      expect(f?.required ?? false).toBe(false);
+      expect(f?.aliases ?? []).toEqual([]);
+    }
+  });
+
+  it('no OTHER verb declares it — the digest is a sidecar-write concern only', () => {
+    const others = Object.entries(AGGREGATE)
+      .filter(([verb]) => verb !== 'write-report' && verb !== 'write-verdict')
+      .filter(([, c]) => c.flags.some((x) => x.canonical === '--expect-digest' || (x.aliases ?? []).includes('--expect-digest')))
+      .map(([verb]) => verb);
+    expect(others).toEqual([]);
+  });
+
+  it('the literal route-cli.ts spells is the declared one', () => {
+    expect(flagLiteralsIn(sourceOf('route-cli.ts'))).toContain('--expect-digest');
+  });
+});
