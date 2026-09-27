@@ -206,13 +206,21 @@ function saysAlreadyExists(json: unknown): boolean {
 
 /**
  * GitHub's exact 422 body `message` for a ref delete aimed at a ref that is
- * already gone (docs.github.com/en/rest/git/refs "Delete a reference", the
- * documented 422 case, re-read 2026-09-27). Pinned as a literal, EXACT match —
- * deliberately narrower than {@link saysAlreadyExists}'s tolerant regex above:
- * a 404 on this same endpoint is documented as ambiguous on GitHub (no repo
- * access reads the same as no repo), so a 404 must still throw, and widening
- * this match beyond the one documented already-gone string would risk quietly
- * swallowing a 422 that means something else. See {@link RealGitHubApi.deleteBranch}.
+ * already gone — **observed**, not documented: the live production error
+ * recorded in issue #1031's field report. GitHub's REST page
+ * (docs.github.com/en/rest/git/refs "Delete a reference", `DELETE
+ * /repos/{owner}/{repo}/git/refs/{ref}`, re-read 2026-09-27) lists only 204
+ * "No Content", 409 "Conflict" and 422 "Validation failed, an attempt was
+ * made to delete the default branch, or the endpoint has been spammed." for
+ * this endpoint — it does not contain this string, and it lists no 404 at
+ * all. Pinned as a literal, EXACT match — deliberately narrower than
+ * {@link saysAlreadyExists}'s tolerant regex above: the endpoint page's
+ * silence on 404 leaves it with no documented meaning here, and GitHub's
+ * general practice of answering 404 for resources the caller cannot see
+ * makes it ambiguous (no repo access reads the same as no ref), so a 404
+ * must still throw, and widening this match beyond the one observed
+ * already-gone string would risk quietly swallowing a 422 that means
+ * something else. See {@link RealGitHubApi.deleteBranch}.
  */
 const REF_DELETE_ALREADY_GONE_MESSAGE = 'Reference does not exist';
 
@@ -989,14 +997,21 @@ export class RealGitHubApi implements GitHubApi {
    * already gone — exactly the STATE this call is trying to reach, not a
    * failure of it. Treating it as a throw made a successful merge report
    * `branchDeletion.deleted: false` with an error, sending the operator down a
-   * manual-sweep fallback for a branch that was never there to sweep.
+   * manual-sweep fallback for a branch that was never there to sweep. This
+   * message is **observed**, not documented: GitHub's REST page for this
+   * endpoint ("Delete a reference", re-read 2026-09-27) lists only 204, 409
+   * and 422 "Validation failed, an attempt was made to delete the default
+   * branch, or the endpoint has been spammed." for its 422 case — it does not
+   * name this string.
    *
-   * The match is deliberately NARROW — the literal, documented 422 body
+   * The match is deliberately NARROW — the literal, observed 422 body
    * `message` string, nothing looser (see {@link REF_DELETE_ALREADY_GONE_MESSAGE}).
    * **A 404 on GitHub is NOT treated as already-gone**, unlike Bitbucket's 404:
-   * GitHub's own docs read a 404 here as ambiguous (no access to the ref reads
-   * the same as no ref at all), so on GitHub — unlike Bitbucket, where a 404 on
-   * this same sub-resource can only mean the ref, never the repo, because the
+   * the endpoint page lists no 404 at all, so it has no documented meaning
+   * here, and GitHub's general practice of answering 404 for resources the
+   * caller cannot see makes it ambiguous (no access to the ref reads the same
+   * as no ref at all) — so on GitHub, unlike Bitbucket, where a 404 on this
+   * same sub-resource can only mean the ref, never the repo, because the
    * call always follows a successful merge against that same repository path —
    * a 404 stays a genuine, reported failure. Any other 422 (a different message
    * entirely), a 403, a 404, or a 5xx all still throw below, so a genuinely

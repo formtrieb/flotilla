@@ -1157,13 +1157,16 @@ export interface LandingHost {
    * posture, or a GitHub repository with "Automatically delete head branches"
    * on) can beat this call's own delete to the ref. That is the end state
    * `--delete-branch` asked for, already reached, not a failure of reaching
-   * it: an implementation MUST resolve, never throw, for its host's documented
+   * it: an implementation MUST resolve, never throw, for its host's
    * already-gone answer (`RealBitbucketApi`: any 404 on this sub-resource,
    * since the call always follows a successful merge against the same
    * repository path so a 404 here can only mean the ref; `RealGitHubApi`: only
-   * the 422 whose message is the literal "Reference does not exist" — GitHub's
-   * 404 on this endpoint is documented ambiguous, no-access reading the same as
-   * no-ref, so it stays a genuine throw there). Every other non-success answer
+   * the 422 whose message is the literal "Reference does not exist" — an
+   * **observed** answer (issue #1031's field report), not a documented one;
+   * GitHub's REST page for this endpoint lists no 404 at all, so a 404 here
+   * has no documented meaning, and GitHub's general practice of answering 404
+   * for resources the caller cannot see makes it ambiguous, no-access reading
+   * the same as no-ref, so it stays a genuine throw there). Every other non-success answer
    * — a protected branch, a permission failure, a host outage — still throws,
    * so a delete that genuinely failed stays a reported, best-effort-failed
    * deletion and is never silently swallowed.
