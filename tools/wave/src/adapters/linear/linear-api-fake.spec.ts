@@ -179,6 +179,20 @@ describe('InMemoryLinearApi store-preflight substrate (FOR-12)', () => {
     expect(names).toContain('In Progress');
   });
 
+  it('carries the target state TYPE through when one is set, and adds none when it is not', async () => {
+    const api = new InMemoryLinearApi();
+    api.setGitAutomationStates([
+      { event: 'merge', stateName: 'Done', stateType: 'completed', targetBranch: null },
+      { event: 'draft', stateName: null, stateType: null, targetBranch: null },
+      { event: 'start', stateName: 'In Progress', targetBranch: null },
+    ]);
+
+    const rules = await api.listGitAutomationStates();
+    expect(rules[0].stateType).toBe('completed');
+    expect(rules[1].stateType).toBeNull();
+    expect('stateType' in rules[2]).toBe(false);
+  });
+
   it('listGitAutomationStates is EMPTY by default — the fake guesses no Linear shipped default', async () => {
     expect(await new InMemoryLinearApi().listGitAutomationStates()).toEqual([]);
   });

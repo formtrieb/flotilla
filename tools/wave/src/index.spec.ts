@@ -469,9 +469,10 @@ describe('the store-preflight family is reachable from the PACKAGE ROOT (issue #
     const reading: NonNullable<StorePreflightReportFromRoot['gitAutomation']> | undefined =
       report.gitAutomation;
     expect(reading?.rules).toEqual([rule]);
-    // Advisory at the root too: draft/start/mergeable carry no rule, so the
-    // reading abstains — and `ok` is still the checks' own answer.
-    expect(reading?.status).toBe('abstain');
+    // Advisory at the root too: `review` names a claim state (ADR-0020
+    // amendment 2026-09-27), so the reading is misaligned — and `ok` is still
+    // the checks' own answer.
+    expect(reading?.status).toBe('misaligned');
     expect(report.ok).toBe(true);
     // The closed check-name union is untouched: the reading is a FIELD.
     expect(report.checks.map((c) => c.name)).toEqual(['tracker-host-integration', 'state-catalog']);

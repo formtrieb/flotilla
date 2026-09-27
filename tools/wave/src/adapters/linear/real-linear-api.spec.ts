@@ -931,7 +931,7 @@ describe('RealLinearApi', () => {
   // after, …): GitAutomationStateConnection!`, `GitAutomationState { event:
   // GitAutomationStates!, state: WorkflowState, targetBranch:
   // GitAutomationTargetBranch }`, `GitAutomationTargetBranch { branchPattern:
-  // String!, isRegex: Boolean! }`.
+  // String!, isRegex: Boolean! }`, `WorkflowState.type: String!`.
 
   describe('listGitAutomationStates (store-preflight gitAutomation reading)', () => {
     function automationPage(
@@ -946,24 +946,28 @@ describe('RealLinearApi', () => {
         ResolveTeamCatalog: () => teamCatalogResponse({ id: 'team-uuid-7' }),
         TeamGitAutomationStates: () =>
           automationPage([
-            { event: 'start', state: { name: 'In Progress' }, targetBranch: null },
+            { event: 'start', state: { name: 'In Progress', type: 'started' }, targetBranch: null },
             { event: 'draft', state: null, targetBranch: null },
-            { event: 'review', state: { name: 'In Review' }, targetBranch: { branchPattern: 'release/.*', isRegex: true } },
+            { event: 'review', state: { name: 'In Review', type: 'started' }, targetBranch: { branchPattern: 'release/.*', isRegex: true } },
+            { event: 'merge', state: { name: 'Done', type: 'completed' }, targetBranch: null },
           ]),
       });
 
       const rules = await api.listGitAutomationStates();
 
       expect(rules).toEqual([
-        { event: 'start', stateName: 'In Progress', targetBranch: null },
+        { event: 'start', stateName: 'In Progress', stateType: 'started', targetBranch: null },
         // A null state is "no action" and stays null — never coalesced.
-        { event: 'draft', stateName: null, targetBranch: null },
-        { event: 'review', stateName: 'In Review', targetBranch: { branchPattern: 'release/.*', isRegex: true } },
+        { event: 'draft', stateName: null, stateType: null, targetBranch: null },
+        { event: 'review', stateName: 'In Review', stateType: 'started', targetBranch: { branchPattern: 'release/.*', isRegex: true } },
+        // The target state's CATEGORY is read and carried (ADR-0020 amendment 2026-09-27: merge is graded on it).
+        { event: 'merge', stateName: 'Done', stateType: 'completed', targetBranch: null },
       ]);
       const req = http.requests.find((r) => r.query.includes('TeamGitAutomationStates'));
       expect(req?.variables).toMatchObject({ teamId: 'team-uuid-7', first: 100 });
       expect(req?.query).toContain('gitAutomationStates(first: $first, after: $after)');
       expect(req?.query).toContain('targetBranch { branchPattern isRegex }');
+      expect(req?.query).toContain('state { name type }');
       // The team is resolved ONCE and reused: a second read costs no second catalog round-trip.
       await api.listGitAutomationStates();
       expect(http.requests.filter((r) => r.query.includes('ResolveTeamCatalog'))).toHaveLength(1);
@@ -1002,7 +1006,8 @@ describe('RealLinearApi', () => {
       const rules = await api.listGitAutomationStates();
 
       expect(rules).toEqual([
-        { event: 'review', stateName: 'Todo', targetBranch: { branchPattern: '', isRegex: false } },
+        // No `type` on the wire → `stateType: null`, never invented.
+        { event: 'review', stateName: 'Todo', stateType: null, targetBranch: { branchPattern: '', isRegex: false } },
       ]);
     });
 

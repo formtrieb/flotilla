@@ -79,6 +79,7 @@ function copyGitAutomationState(rule: LinearGitAutomationState): LinearGitAutoma
   return {
     event: rule.event,
     stateName: rule.stateName,
+    ...(rule.stateType !== undefined ? { stateType: rule.stateType } : {}),
     targetBranch: rule.targetBranch === null ? null : { ...rule.targetBranch },
   };
 }
