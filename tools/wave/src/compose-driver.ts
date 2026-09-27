@@ -654,13 +654,42 @@ function renderVerifyNeeds(needs: VerifyCommand['needs']): string {
   return `  (declared needs — ${parts.join('; ')})`;
 }
 
+/**
+ * Render one verify command's ENVIRONMENT NOTES beside it (ADR-0049 Amendment
+ * 2026-09-27, decision 2) — one indented sub-bullet per note, directly under
+ * the command's own bullet, so each note is read as a fact about THAT command
+ * and never as a banner over the gate. Rendered where the declared needs
+ * render and nowhere else: only for the commands this row selected.
+ *
+ * `''` for a command with no notes, which is what keeps a notes-free config
+ * composing byte-identically to how it did before the field existed.
+ */
+function renderEnvironmentNotes(notes: VerifyCommand['environmentNotes']): string {
+  if (!notes || notes.length === 0) return '';
+  return notes.map((note) => `\n  - environment note: ${note}`).join('');
+}
+
 /** Render one verify command for the embedded spec, directory carried in the command. */
 function renderVerifyCommand(cmd: VerifyCommand): string {
   const base = cmd.cwd
     ? `\`${cmd.command}\`  (the profile declares cwd \`${cmd.cwd}\` — carry it IN the command, never \`cd\` first)`
     : `\`${cmd.command}\``;
-  return `${base}${renderVerifyNeeds(cmd.needs)}`;
+  return `${base}${renderVerifyNeeds(cmd.needs)}${renderEnvironmentNotes(cmd.environmentNotes)}`;
 }
+
+/**
+ * The brief rule that travels WITH the notes (ADR-0049 Amendment 2026-09-27,
+ * decision 4): a note explains a failure and never excuses one. One sentence
+ * per clause of the decision, so a spec can pin each of them by name.
+ */
+const ENVIRONMENT_NOTES_RULE =
+  'A command above carrying an **environment note** comes with an observed fact about how it behaves in ' +
+  'this sandbox. A note explains; it never excuses. A failure that matches a note\'s signature is still ' +
+  'reported as a failure, citing the note. The acceptance criteria that gate would have backed go through ' +
+  'the Reviewer\'s existing deferred valve, as a capability-gated gate\'s do. A note never turns a failure ' +
+  'into a `pass`, and it is never a reason to skip a command. A failure that does not match the note\'s ' +
+  'signature is an ordinary failure. An observation that contradicts a note is a Disclosure naming the ' +
+  'command (ADR-0049).';
 
 // ─── The embedded issue spec ──────────────────────────────────────────────────
 
@@ -722,6 +751,14 @@ export function composeIssueSpec(input: IssueSpecInput): string {
         'but NOT provided. Report it as not run, with the refusal reason — never re-run it with the ' +
         'sandbox off, never widen your own permissions, and never drop it silently (ADR-0049).',
     );
+  }
+  // The notes' rule, on the same terms: beside the data, and ONLY when a
+  // selected command carries a note, so a notes-free config composes exactly
+  // the spec it composed before the field existed (ADR-0049 Amendment
+  // 2026-09-27). Both roles read this one spec, so both meet the rule.
+  if (input.verify.some((cmd) => renderEnvironmentNotes(cmd.environmentNotes) !== '')) {
+    parts.push('');
+    parts.push(ENVIRONMENT_NOTES_RULE);
   }
   return parts.join('\n');
 }

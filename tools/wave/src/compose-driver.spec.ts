@@ -1134,6 +1134,109 @@ describe('composeIssueSpec — declared verify needs ride beside the command (AD
   });
 });
 
+// ── a verify command's environment notes ride beside it (ADR-0049 Amend. 2026-09-27) ──
+//
+// The knowledge half beside the capability half: a note is an observed fact
+// about how ONE command behaves in the sandbox, rendered where that command's
+// declared needs render, together with a rule that says a note explains a
+// failure and never excuses one.
+
+describe('composeIssueSpec — environment notes ride beside their command (ADR-0049 Amendment 2026-09-27)', () => {
+  const BASE = {
+    id: '1050',
+    title: 'Carry environment notes',
+    body: 'Body text.\n\n## Acceptance criteria\n\n- [ ] it ships',
+    risk: 'public-API-change',
+    worker: 'background-heavy',
+    files: ['tools/wave/**'],
+    note: 'Read the ADR first.',
+  } as const;
+
+  const VERIFY: VerifyCommand[] = [
+    { command: 'npm ci --prefix tools/wave' },
+    { command: 'vitest run --root tools/wave', cwd: 'tools/wave', needs: { writes: ['/var/tmp/cache'] } },
+  ];
+
+  /**
+   * The spec `composeIssueSpec` produced for `BASE` + `VERIFY` BEFORE this
+   * field existed — captured by running the anchor's own code on exactly this
+   * input, and written out here rather than derived, so the comparison below is
+   * against the old output and never against the new code itself. It carries a
+   * Coordinator note, a cwd and a declared need, so every conditional block the
+   * spec had before the change is inside the pin.
+   */
+  const BEFORE_THIS_CHANGE =
+    "# Carry environment notes\n\nIssue id (bare): 1050\nRisk: public-API-change\nWorker: background-heavy\nDeclared Files globs — stay strictly inside these:\n- tools/wave/**\n\nBody text.\n\n## Acceptance criteria\n\n- [ ] it ships\n\n## Notes from the Coordinator (read before you start)\n\nRead the ADR first.\n\n## Verify gate (from this consumer's wave.config.json verify — run ALL of them, regardless of which files you touched. Carry the directory IN each command, never `cd` first.)\n- `npm ci --prefix tools/wave`\n- `vitest run --root tools/wave`  (the profile declares cwd `tools/wave` — carry it IN the command, never `cd` first)  (declared needs — writes outside the worktree: `/var/tmp/cache`)\n\nA command above carrying **declared needs** names what it must reach outside this worktree. A declaration is not a grant: if the sandbox refuses that command anyway, the need is declared but NOT provided. Report it as not run, with the refusal reason — never re-run it with the sandbox off, never widen your own permissions, and never drop it silently (ADR-0049).";
+
+  it('a notes-free config composes byte-identically to the output before this change', () => {
+    expect(composeIssueSpec({ ...BASE, verify: VERIFY })).toBe(BEFORE_THIS_CHANGE);
+  });
+
+  it('NEGATIVE CONTROL: the same config with ONE note composes differently', () => {
+    const noted = composeIssueSpec({
+      ...BASE,
+      verify: [VERIFY[0], { ...VERIFY[1], environmentNotes: ['esbuild exits 1 without output here'] }],
+    });
+    expect(noted).not.toBe(BEFORE_THIS_CHANGE);
+    // …and only by what it adds: the old spec is still its prefix, up to the
+    // point where the noted command's bullet ends.
+    const cut = BEFORE_THIS_CHANGE.indexOf('\n\nA command above carrying **declared needs**');
+    expect(noted.startsWith(BEFORE_THIS_CHANGE.slice(0, cut))).toBe(true);
+  });
+
+  it('renders each note directly beneath its own command, and nowhere else', () => {
+    const spec = composeIssueSpec({
+      ...BASE,
+      verify: [
+        { command: 'npm ci --prefix tools/wave' },
+        { command: 'npm run build', environmentNotes: ['esbuild exits 1 silently', 'retry prints the error'] },
+        { command: 'npm run e2e' },
+      ],
+    });
+    expect(spec).toContain(
+      '- `npm run build`\n  - environment note: esbuild exits 1 silently\n  - environment note: retry prints the error\n- `npm run e2e`',
+    );
+    // the command without notes keeps its plain bullet
+    expect(spec).toContain('- `npm ci --prefix tools/wave`\n- `npm run build`');
+    expect(spec.match(/environment note: /g)).toHaveLength(2);
+  });
+
+  it('renders the note after the declared needs and the cwd, on the same command', () => {
+    const spec = composeIssueSpec({
+      ...BASE,
+      verify: [{ ...VERIFY[1], environmentNotes: ['Chromium will not start here'] }],
+    });
+    expect(spec).toContain(
+      '(declared needs — writes outside the worktree: `/var/tmp/cache`)\n  - environment note: Chromium will not start here',
+    );
+  });
+
+  /** One sentence per clause of ADR-0049 Amendment 2026-09-27, decision 4. */
+  const RULE_CLAUSES: readonly RegExp[] = [
+    /A note explains; it never excuses\./,
+    /A failure that matches a note's signature is still reported as a failure, citing the note\./,
+    /The acceptance criteria that gate would have backed go through the Reviewer's existing deferred valve, as a capability-gated gate's do\./,
+    /A note never turns a failure into a `pass`, and it is never a reason to skip a command\./,
+    /A failure that does not match the note's signature is an ordinary failure\./,
+    /An observation that contradicts a note is a Disclosure naming the command/,
+  ];
+
+  it('states the brief rule, every clause of it, when a selected command carries a note', () => {
+    const spec = composeIssueSpec({ ...BASE, verify: [{ command: 'npm run build', environmentNotes: ['x'] }] });
+    for (const clause of RULE_CLAUSES) expect(spec).toMatch(clause);
+    expect(spec).toContain('**environment note**');
+  });
+
+  it('NEGATIVE CONTROL: no clause of the rule renders when no selected command carries a note', () => {
+    for (const verify of [VERIFY, [], [{ command: 'x', needs: { host: true } as const }]]) {
+      const spec = composeIssueSpec({ ...BASE, verify });
+      for (const clause of RULE_CLAUSES) expect(spec).not.toMatch(clause);
+      expect(spec).not.toContain('environment note:');
+      expect(spec).not.toContain('**environment note**');
+    }
+  });
+});
+
 // ── the composed brief never manufactures a confirmation (issue #717) ────────
 //
 // The wording this replaces asserted a CONSUMER ANSWER the composer never had:
@@ -2170,6 +2273,127 @@ describe('compose-driver — the verb, end to end', () => {
     expect(workerBrief).toMatch(/report it as NOT RUN/);
     expect(reviewerBrief).toContain('capability-gated');
     expect(reviewerBrief).toMatch(/at most the Worker's rights/i);
+  });
+
+  // ADR-0049 Amendment 2026-09-27 — environment notes reach BOTH composed briefs
+  // beside their own command, and only for the commands selected for the row.
+  // Asserted on the RUNNING script for the same reason as the needs test above:
+  // the claim is about what the two dispatched agents actually read.
+  describe('environment notes in both composed briefs (ADR-0049 Amendment 2026-09-27)', () => {
+    /** Profiles for the seeded row: `engine` matches its files, `docs` never does. */
+    function profiles(engineNotes?: string[], docsNotes?: string[]) {
+      return [
+        {
+          name: 'engine',
+          appliesTo: ['tools/wave/**'],
+          commands: [
+            { command: 'npm ci --prefix tools/wave' },
+            {
+              command: 'vitest run --root tools/wave',
+              ...(engineNotes ? { environmentNotes: engineNotes } : {}),
+            },
+          ],
+        },
+        {
+          name: 'docs',
+          appliesTo: ['no-such-dir/**'],
+          commands: [
+            { command: 'npm run docs-lint', ...(docsNotes ? { environmentNotes: docsNotes } : {}) },
+          ],
+        },
+      ];
+    }
+
+    /** Compose the driver for one verify block; return the script and both briefs. */
+    async function composeWith(
+      seeded: { id: string; spinePath: string; configPath: string },
+      ps: unknown[],
+    ): Promise<{ worker: string; reviewer: string }> {
+      // One seeded row per test, re-composed under each config: a second
+      // `seed()` would file a second issue with a different id, and the briefs
+      // would differ by that id alone.
+      const { id, spinePath, configPath } = seeded;
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          store: { kind: 'markdown', repoRoot, slug: SLUG },
+          engine: { cli: SOURCE_FORM_CLI },
+          verify: { profiles: ps },
+        }),
+        'utf8',
+      );
+      const out = join(repoRoot, 'driver.js');
+      expect(
+        await runComposeDriver([
+          '--spine', spinePath,
+          '--config', configPath,
+          '--repo-root', repoRoot,
+          '--anchor', anchor,
+          '--out', out,
+          '--reviewer-agent', 'flotilla:wave-reviewer',
+        ]),
+      ).toBe(0);
+      const { calls } = await runComposedDriver(readFileSync(out, 'utf8'));
+      const worker = calls.find((c) => String(c.opts.label) === `worker:${id}`)?.brief ?? '';
+      const reviewer = calls.find((c) => String(c.opts.label) === `review:${id}`)?.brief ?? '';
+      expect(worker).not.toBe('');
+      expect(reviewer).not.toBe('');
+      return { worker, reviewer };
+    }
+
+    it('a note renders beside its own command in the Worker brief AND the Reviewer brief, with the rule', async () => {
+      const { worker, reviewer } = await composeWith(await seed(), profiles(['esbuild exits 1 without output here']));
+      for (const brief of [worker, reviewer]) {
+        expect(brief).toContain(
+          '- `vitest run --root tools/wave`\n  - environment note: esbuild exits 1 without output here',
+        );
+        expect(brief).toMatch(/A note explains; it never excuses\./);
+      }
+    });
+
+    it('a note on a command NOT selected for the row renders in neither brief — and composes byte-identically to no note at all', async () => {
+      const seeded = await seed();
+      const unselected = await composeWith(seeded, profiles(undefined, ['docs-lint needs the network']));
+      for (const brief of [unselected.worker, unselected.reviewer]) {
+        expect(brief).not.toContain('docs-lint');
+        expect(brief).not.toContain('environment note');
+        expect(brief).not.toMatch(/A note explains; it never excuses/);
+      }
+      const none = await composeWith(seeded, profiles());
+      expect(unselected.worker).toBe(none.worker);
+      expect(unselected.reviewer).toBe(none.reviewer);
+
+      // NEGATIVE CONTROL: the same note on a SELECTED command changes both briefs.
+      const selected = await composeWith(seeded, profiles(['docs-lint needs the network']));
+      expect(selected.worker).not.toBe(none.worker);
+      expect(selected.reviewer).not.toBe(none.reviewer);
+    });
+
+    it('a config whose note breaks the bound is refused on load: exit 2, naming the command', async () => {
+      const { spinePath, configPath } = await seed();
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          store: { kind: 'markdown', repoRoot, slug: SLUG },
+          engine: { cli: SOURCE_FORM_CLI },
+          verify: { profiles: profiles(['a', 'b', 'c', 'd']) },
+        }),
+        'utf8',
+      );
+      expect(
+        await runComposeDriver([
+          '--spine', spinePath,
+          '--config', configPath,
+          '--repo-root', repoRoot,
+          '--anchor', anchor,
+          '--out', join(repoRoot, 'driver.js'),
+          '--reviewer-agent', 'flotilla:wave-reviewer',
+        ]),
+      ).toBe(2);
+      expect(stderr).toContain('verify.profiles[0].commands[1].environmentNotes');
+      expect(stderr).toContain('"vitest run --root tools/wave"');
+      expect(stderr).toMatch(/carries 4 notes, more than 3/);
+    });
   });
 
   // ADR-0049 decision 1 — the no-escalation rule binds EVERY dispatched role:

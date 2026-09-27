@@ -1876,6 +1876,89 @@ describe('loadWaveConfig — verify.commands[].needs is a CLOSED set of three (A
   });
 });
 
+// ── verify.commands[].environmentNotes — bounded at load (ADR-0049 Amend. 2026-09-27) ──
+//
+// A note renders in the Worker AND the Reviewer brief of every row that selects
+// its command, and every brief clause is paid per dispatch (ADR-0034) — so the
+// bound is refused at load, naming the command, not discovered in a brief.
+
+describe('loadWaveConfig — verify.commands[].environmentNotes is bounded (ADR-0049 Amendment 2026-09-27)', () => {
+  const COMMAND = 'npm run build --prefix app';
+
+  /** A github config whose single verify command carries `environmentNotes` verbatim. */
+  function loadWithNotes(environmentNotes: unknown) {
+    return loadConfigFromString(
+      JSON.stringify({
+        store: { kind: 'github' },
+        verify: {
+          profiles: [{ name: 'app', appliesTo: ['app/**'], commands: [{ command: COMMAND, environmentNotes }] }],
+        },
+      }),
+    );
+  }
+
+  /** Every refusal names the field, the command itself, and the bound. */
+  function expectRefused(environmentNotes: unknown, what: RegExp): void {
+    let message = '';
+    try {
+      loadWithNotes(environmentNotes);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message, 'expected a refusal').not.toBe('');
+    expect(message).toContain('verify.profiles[0].commands[0].environmentNotes');
+    expect(message).toContain(JSON.stringify(COMMAND));
+    expect(message).toMatch(/at most 3 non-empty strings, each at most 200 characters/);
+    expect(message).toMatch(what);
+  }
+
+  it('accepts 3 notes of exactly 200 characters and hands them back verbatim', () => {
+    const notes = ['a'.repeat(200), 'b'.repeat(200), 'c'.repeat(200)];
+    expect(loadWithNotes(notes).verify?.profiles[0].commands[0].environmentNotes).toEqual(notes);
+  });
+
+  it('refuses 4 notes on one command', () => {
+    expectRefused(['a', 'b', 'c', 'd'], /carries 4 notes, more than 3/);
+  });
+
+  it('refuses one note of 201 characters', () => {
+    expectRefused(['x'.repeat(201)], /\[0\] is 201 characters, more than 200/);
+  });
+
+  it('counts characters as code points, not UTF-16 units', () => {
+    // 200 astral-plane characters are 400 UTF-16 units; the bound is on characters.
+    const astral = '\u{1F9EA}'.repeat(200);
+    expect(astral.length).toBe(400);
+    expect(() => loadWithNotes([astral])).not.toThrow();
+    expectRefused([astral + 'x'], /is 201 characters/);
+  });
+
+  it('refuses a non-array value', () => {
+    expectRefused('esbuild exits 1', /must be an array of strings/);
+    expectRefused({ 0: 'esbuild exits 1' }, /must be an array of strings/);
+  });
+
+  it('refuses an empty-string note, a whitespace-only note and a non-string note', () => {
+    expectRefused(['ok', ''], /\[1\] must be a non-empty string/);
+    expectRefused(['   '], /\[0\] must be a non-empty string/);
+    expectRefused([42], /\[0\] must be a non-empty string/);
+  });
+
+  it('refuses an empty array — it notes nothing, so it is omitted instead', () => {
+    expectRefused([], /carries no note/);
+  });
+
+  it('NEGATIVE CONTROL: no notes anywhere loads exactly as before', () => {
+    const cfg = loadConfigFromString(
+      JSON.stringify({
+        store: { kind: 'github' },
+        verify: { profiles: [{ name: 'app', appliesTo: ['app/**'], commands: [{ command: COMMAND }] }] },
+      }),
+    );
+    expect(cfg.verify?.profiles[0].commands[0]).toEqual({ command: COMMAND });
+  });
+});
+
 // ── the unknown-key warning's key tables ARE these declarations (issue #761) ─
 //
 // The warning that names a typo'd key has to know which keys are not typos, and
@@ -1941,7 +2024,9 @@ describe('the unknown-key warning knows exactly the keys the schema declares (is
       {
         name: 'p',
         appliesTo: ['src/**'],
-        commands: [{ cwd: 'tools/wave', command: 'npm ci', needs: { host: true } }],
+        commands: [
+          { cwd: 'tools/wave', command: 'npm ci', needs: { host: true }, environmentNotes: ['esbuild exits 1 silently'] },
+        ],
       },
     ],
   };
