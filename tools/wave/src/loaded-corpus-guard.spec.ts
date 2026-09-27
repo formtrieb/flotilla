@@ -1169,7 +1169,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see the docblock above.
+const LOADED_CORPUS_CEILING_BYTES = 1_278_000; // RAISED by issue #1051 — see below (this is the first raise since issue #998; the docblock above stops at #998's own reasoning).
 // NOT raised or lowered by issue #817 (wave-setup's second residual-form diet): that row's own
 // edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
 // up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
@@ -1224,6 +1224,17 @@ const LOADED_CORPUS_CEILING_BYTES = 1_276_000; // RAISED by issue #998 — see t
 // standing-load line above), re-measures the population at 1,274,718 B over the same 57 files (next
 // full KB 1,275,000 < this value) — 282 B of headroom left.
 // NOT raised by issue #1050 (`environmentNotes` documented beside `needs`): setup-mechanics.md adds 799 B, re-measured at 1,275,517 B over the same 57 files (next full KB 1,276,000 = this value) — 483 B of headroom left; shared standing load untouched (162,892 B).
+// RAISED by issue #1051 (setup's own ask, offered after the sandboxed run of a `needs`-bearing command,
+// to record #1050's `environmentNotes` field — ADR-0049 Amendment 2026-09-27 decision 5b): SKILL.md's
+// live-gate paragraph gains the ask, its three triggers and the operator's-yes-only rule (+420 B), and
+// setup-mechanics.md's live-gate section gains the same ask in full plus a pointer to the worked-example
+// evidence sibling (+1,424 B). The worked example itself (the accepted config, `config validate`'s exit-0
+// verdict on it, and the bound's own exit-1 refusal for contrast) lives in the new
+// `evidence/environment-note-worked-example.md`, excluded from this measure by definition. Together the
+// two touched files add 1,844 B, re-measured at 1,277,361 B over the same 57 files — past the previous
+// 1,276,000 B ceiling, so it moves to that sum rounded UP to the next full KB (1 KB = 1000 B):
+// 1,278,000 B. 639 B of headroom left. Shared standing load untouched (162,892 B — this row touches no
+// `wave-shared/` file).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

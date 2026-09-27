@@ -102,6 +102,8 @@ A verify command's declared `needs` (the [Verify](#3-verify-optional) interview 
 
 **After the file lands, run the live-gate: every needs-bearing command, once, for real, inside the now-scaffolded sandbox.** Record pass/refused per command. A **refused** command whose `writes`/`network` need was just declared and scaffolded is a **setup STOP** — quote the refusal verbatim and fix the gap here, before any wave dispatches against this config; never a finding left for the first wave to discover unattended. A `host`-needing command refusing is expected, not a STOP — it is the same honest deferral every `host` need takes on every runner. Full procedure: [reference/setup-mechanics.md — the live-gate](reference/setup-mechanics.md#the-live-gate--run-each-needs-bearing-command-once-inside-the-now-scaffolded-sandbox).
 
+**After that one run, ask whether to record what it showed as an environment note on the command (ADR-0049 Amendment 2026-09-27, decision 5b)** — three triggers only (no-output failure, a sandbox-vs-outside difference, a workaround needed), the bound stated aloud, and written only on the operator's explicit yes; setup never writes one unasked. Same reference section for the ask's exact shape and a worked example.
+
 ### 2. Eligibility (the Eligibility OR-set)
 
 The set of issue-side triage states that make an issue wave-grabbable. `wave-plan` includes an issue if it carries **any** state in this set (OR semantics). Default: `["ready-for-agent"]`.
