@@ -59,6 +59,7 @@ The filename is **engine-computed** — the caller passes `--id` + `--iter`, nev
 | Call | Prints |
 |---|---|
 | `{{wave-cli}} route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> --config <cfg> [--title <text>] [--ruling <text>]` | ONE JSON result: `{ ok, verb, id, iter, disposition, steps[], wrote{…}, … }` — plus a `ruled` object on an Operator-ruled round |
+| the same call `--approve "<the Operator's reason>"` | `pr-created` plus `approved`, ONLY on a row stopped at `public-api-approval-required`: fires `human-approve`, adds an `## Operator approval` PR-body section, records the approval in the spine, clears the flag. Any other row: exit 1, nothing written |
 
 This is the whole post-return sequence for one row, in the write-ahead order, in one process: the sidecar presence-and-validation check (recovering a missing or corrupt record from the passed `--report-file`/`--verdict-file` payload through the same writer the Scribe stages use, and refusing rather than guessing when it cannot), the worker-phase route, the verdict-phase route, the verdict render, find-before-create of the PR, the host status re-query, the two spine writes, and the `in-review` rung transition. Both `--state` derivations are the verb's — iteration-keyed for the worker phase, **verdict**-keyed for the reviewer phase — and `riskClass` comes off the typed verdict, so neither is a flag anyone can garble.
 

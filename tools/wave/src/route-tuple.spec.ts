@@ -28,7 +28,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,7 +49,8 @@ import { MarkdownFsStore } from './adapters/markdown-fs-store';
 import type { IssueStore } from './adapters/issue-store';
 import { stripBareIds } from './compose-driver';
 import { renderSidecarBody } from './route-cli';
-import { renderSpine, setRowState, upsertDispatchLogEntry } from './wave-md-rw';
+import { readDisclosures } from './spine-store';
+import { readSpine, renderSpine, setRowState, upsertDispatchLogEntry } from './wave-md-rw';
 import type {
   Creds,
   HttpProbe,
@@ -1741,6 +1742,338 @@ describe('route-tuple', () => {
       );
       expect(result()).not.toHaveProperty('ruled');
       expect(step('route-verdict')).not.toHaveProperty('ruled');
+    });
+  });
+
+  // ── the Operator's approval past the public-API STOP (ADR-0047) ───────────
+  //
+  // A `public-API-change` row the Reviewer approved stops at
+  // `public-api-approval-required` and writes nothing. `--approve "<reason>"` is
+  // the continuation: it fires `human-approve` and runs the approve path end to
+  // end — the PR body gains an `## Operator approval` section quoting the reason,
+  // the spine gets `pr-created` + the PR url + a recorded approval, and the
+  // tracker's flag is cleared before the `in-review` rung. Everything below is
+  // asserted through the same fakes the approve path above is.
+
+  describe('--approve: the Operator\'s approval past the public-API STOP', () => {
+    const APPROVAL =
+      'Operator approved 2026-09-28: the new flag is additive and ships in the next minor.';
+    const FLAG = {
+      kind: 'recoverable-stop' as const,
+      question: 'Approve landing this public-API change?',
+      options: ['approve', 'park'],
+    };
+
+    /** Seed a public-API row, route it once (the STOP), and flag it as step 8 does. */
+    async function stopAndFlag(): Promise<void> {
+      await seed();
+      landTuple(1, report(), verdict({ riskClass: 'public-API-change' }));
+      const stopped = await runRouteTuple(argv(1), deps({ landingHost: fakeLanding({ state: 'none' }) }));
+      expect(stopped).toBe(0);
+      expect(result()).toMatchObject({
+        disposition: 'stop',
+        stop: { reason: 'public-api-approval-required' },
+      });
+      // The STOP now names the continuation it has.
+      expect(result().next).toContain('--approve');
+      stdout = '';
+      await store.flag(id, FLAG);
+      expect(await rungOf()).toBe('needs-attention');
+    }
+
+    const rowOf = () => readSpine(spineSource()).planTable.find((r) => r.id === id);
+
+    it('writes PR body (approval + reason), spine (pr-created + url + recorded approval) and tracker (flag cleared, in-review)', async () => {
+      await stopAndFlag();
+      let posted: Record<string, string> = {};
+      const { http, requests } = fakeHttp({
+        get: () => ({ status: 200, json: [] }),
+        post: (_url, body) => {
+          posted = JSON.parse(body ?? '{}') as Record<string, string>;
+          return { status: 201, json: { html_url: NEW_PR } };
+        },
+      });
+      const code = await runRouteTuple(
+        argv(1, ['--approve', APPROVAL]),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+
+      expect(stderr).toBe('');
+      expect(code).toBe(0);
+      expect(result()).toMatchObject({
+        disposition: 'pr-created',
+        prUrl: NEW_PR,
+        approved: { event: 'human-approve', from: 'reviewing', reason: APPROVAL, disclosure: `${id}.1` },
+        wrote: { spine: true, host: true, tracker: true },
+      });
+      // The route-verdict step still records the STOP it routed to; the
+      // continuation is its own step, through the state machine's own cell.
+      expect(step('route-verdict')).toMatchObject({
+        outcome: { type: 'stop', reason: 'public-api-approval-required' },
+      });
+      expect(step('operator-approve')).toMatchObject({
+        status: 'performed',
+        from: 'reviewing',
+        event: 'human-approve',
+        outcome: { type: 'transition', nextState: 'approved' },
+        reason: APPROVAL,
+      });
+      expect(steps().map((s) => s.step)).toEqual([
+        'sidecar-check',
+        'route-outcome',
+        'route-verdict',
+        'operator-approve',
+        'render-verdict',
+        'pr-create-or-reuse',
+        'pr-status',
+        'spine-row-state',
+        'spine-row-pr',
+        'spine-approval',
+        'clear-flag',
+        'rung-transition',
+      ]);
+
+      // PR body: summary → verdict → approval → close phrase (last line).
+      expect(posted.body).toContain('## Reviewer verdict');
+      expect(posted.body).toContain('## Operator approval');
+      expect(posted.body).toContain(`Reason: ${APPROVAL}`);
+      expect(posted.body.indexOf('## Reviewer verdict')).toBeLessThan(posted.body.indexOf('## Operator approval'));
+      expect(posted.body.split('\n').at(-1)).toBe(`Closes #${id}`);
+      expect(requests.map((r) => r.method)).toEqual(['GET', 'POST']);
+
+      // Spine: pr-created, the PR url, and the approval recorded — dispositioned,
+      // so it is durable without ever blocking the archive gate.
+      expect(rowOf()?.state).toBe('pr-created');
+      expect(spineSource()).toContain(NEW_PR);
+      const recorded = readDisclosures(spineSource()).filter((d) => d.rowId === id);
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        source: 'coordinator',
+        disposition: 'resolved-in-slice',
+        iter: 1,
+      });
+      expect(recorded[0]?.text).toContain('public-api-approval-required');
+      expect(recorded[0]?.text).toContain(APPROVAL);
+
+      // Tracker: flag cleared, rung in-review — and no still-flagged warning.
+      expect(await rungOf()).toBe('in-review');
+      expect(step('clear-flag')).toMatchObject({ status: 'performed' });
+    });
+
+    it('a re-run is idempotent: the open PR is reused, ONE approval section, ONE recorded approval', async () => {
+      await stopAndFlag();
+      let livePrBody = '';
+      const { http, requests } = fakeHttp({
+        get: () => ({
+          status: 200,
+          json: livePrBody === '' ? [] : [{ html_url: NEW_PR, number: 8, title: 'T', body: livePrBody }],
+        }),
+        post: (_url, body) => {
+          livePrBody = (JSON.parse(body ?? '{}') as Record<string, string>).body ?? '';
+          return { status: 201, json: { html_url: NEW_PR } };
+        },
+        patch: (_url, body) => {
+          livePrBody = (JSON.parse(body ?? '{}') as Record<string, string>).body ?? '';
+          return { status: 200, json: {} };
+        },
+      });
+      const run = () =>
+        runRouteTuple(
+          argv(1, ['--approve', APPROVAL]),
+          deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+        );
+      expect(await run()).toBe(0);
+      const afterFirst = spineSource();
+      stdout = '';
+      expect(await run()).toBe(0);
+
+      expect(step('spine-approval')).toMatchObject({ status: 'performed-before', ref: `${id}.1` });
+      expect(step('clear-flag')).toMatchObject({ status: 'performed-before' });
+      expect(step('rung-transition')).toMatchObject({ status: 'performed-before' });
+      expect(result()).toMatchObject({ wrote: { spine: false, tracker: false } });
+      expect(spineSource()).toBe(afterFirst);
+      expect(livePrBody.split('## Operator approval')).toHaveLength(2);
+      expect(livePrBody.split('## Reviewer verdict')).toHaveLength(2);
+      expect(livePrBody.split('\n').at(-1)).toBe(`Closes #${id}`);
+      expect(requests.map((r) => r.method)).toEqual(['GET', 'POST', 'GET', 'PATCH']);
+    });
+
+    it('a re-run after a PARTIAL failure (tracker down after the spine landed) finishes the job', async () => {
+      await stopAndFlag();
+      let trackerDown = true;
+      const flaky = new Proxy(store, {
+        get(target, prop, receiver) {
+          if (prop === 'clearFlag' && trackerDown) {
+            return async () => {
+              throw new Error('tracker unreachable');
+            };
+          }
+          const value = Reflect.get(target, prop, receiver) as unknown;
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const run = () =>
+        runRouteTuple(
+          argv(1, ['--approve', APPROVAL]),
+          deps({ store: flaky, http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+        );
+
+      expect(await run()).toBe(1);
+      expect(stderr).toContain('tracker unreachable');
+      // The spine is the WAL: it landed before the tracker, approval included.
+      expect(rowOf()?.state).toBe('pr-created');
+      expect(await rungOf()).toBe('needs-attention');
+
+      trackerDown = false;
+      stdout = '';
+      expect(await run()).toBe(0);
+      expect(step('spine-row-state')).toMatchObject({ status: 'performed-before' });
+      expect(step('spine-approval')).toMatchObject({ status: 'performed-before' });
+      expect(step('clear-flag')).toMatchObject({ status: 'performed' });
+      expect(await rungOf()).toBe('in-review');
+      expect(readDisclosures(spineSource()).filter((d) => d.rowId === id)).toHaveLength(1);
+    });
+
+    it('from a cap=1 second round (spine row re-dispatched, iteration 2) it lands the same way', async () => {
+      await seed();
+      writeFileSync(spinePath, setRowState(spineSource(), id, 're-dispatched'), 'utf8');
+      landTuple(2, report(), verdict({ riskClass: 'public-API-change' }));
+      const { http } = fakeHttp({ get: () => ({ status: 200, json: [] }) });
+      const code = await runRouteTuple(
+        argv(2, ['--approve', APPROVAL]),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: NEW_PR, number: 8 }) }),
+      );
+      expect(code).toBe(0);
+      expect(result()).toMatchObject({ disposition: 'pr-created', iter: 2 });
+      expect(rowOf()?.state).toBe('pr-created');
+    });
+
+    // ── refusals: exit non-zero, nothing written ────────────────────────────
+
+    /** Assert the refusal wrote NOTHING: spine bytes, tracker rung, sidecars, host. */
+    async function expectNothingWritten(
+      before: { spine: string; rung: string; reports: string; verdicts: string },
+      requests: HttpRequest[],
+    ): Promise<void> {
+      expect(spineSource()).toBe(before.spine);
+      expect(await rungOf()).toBe(before.rung);
+      expect(sidecarListing(reportsDir)).toBe(before.reports);
+      expect(sidecarListing(verdictsDir)).toBe(before.verdicts);
+      expect(requests).toHaveLength(0);
+      expect(stdout).toBe('');
+    }
+
+    function sidecarListing(dir: string): string {
+      try {
+        return readdirSync(dir).sort().join('\n');
+      } catch {
+        return '<absent>';
+      }
+    }
+
+    async function snapshot() {
+      return {
+        spine: spineSource(),
+        rung: await rungOf(),
+        reports: sidecarListing(reportsDir),
+        verdicts: sidecarListing(verdictsDir),
+      };
+    }
+
+    for (const [label, extra, refusal] of [
+      ['an EMPTY reason', ['--approve', ''], /the --approve reason is blank/],
+      ['a whitespace-only reason', ['--approve', '   '], /the --approve reason is blank/],
+      ['a bare token', ['--approve', 'yes'], /the --approve reason is 3 characters long/],
+      ['a trailing --approve with no value', ['--approve'], /--approve takes the Operator's reason as its value/],
+    ] as const) {
+      it(`${label} → exit 2 (usage), nothing written`, async () => {
+        await stopAndFlag();
+        const before = await snapshot();
+        const { http, requests } = fakeHttp({});
+        const code = await runRouteTuple(argv(1, [...extra]), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+        expect(code).toBe(2);
+        expect(stderr).toMatch(refusal);
+        await expectNothingWritten(before, requests);
+      });
+    }
+
+    it('an ORDINARY approve (not public-API) is refused — --approve is not a way around the routing', async () => {
+      await seed();
+      landTuple(1, report(), verdict());
+      const before = await snapshot();
+      const { http, requests } = fakeHttp({});
+      const code = await runRouteTuple(argv(1, ['--approve', APPROVAL]), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/--approve continues ONLY a row stopped at public-api-approval-required/);
+      expect(stderr).toMatch(/a transition to approved/);
+      await expectNothingWritten(before, requests);
+    });
+
+    for (const [label, v, reason] of [
+      ['changes-requested', verdict({ verdict: 'changes-requested', riskClass: 'public-API-change' }), /a transition to re-dispatched/],
+      ['questions-blocking', verdict({ verdict: 'questions-blocking', riskClass: 'public-API-change' }), /the reviewer-questions-blocking STOP/],
+    ] as const) {
+      it(`a public-API row whose Reviewer said ${label} is refused — it is not at the approval STOP`, async () => {
+        await seed();
+        landTuple(1, report(), v);
+        const before = await snapshot();
+        const { http, requests } = fakeHttp({});
+        const code = await runRouteTuple(argv(1, ['--approve', APPROVAL]), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+        expect(code).toBe(1);
+        expect(stderr).toMatch(reason);
+        await expectNothingWritten(before, requests);
+      });
+    }
+
+    it('a Worker `blocked` row is refused in the worker phase', async () => {
+      await seed();
+      landTuple(1, report({ outcome: 'blocked' }), verdict({ riskClass: 'public-API-change' }));
+      const before = await snapshot();
+      const { http, requests } = fakeHttp({});
+      const code = await runRouteTuple(argv(1, ['--approve', APPROVAL]), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/its worker phase routes to the worker-failed STOP/);
+      await expectNothingWritten(before, requests);
+    });
+
+    it('a PARKED row is refused off its spine state, before anything is read', async () => {
+      await seed();
+      landTuple(1, report(), verdict({ riskClass: 'public-API-change' }));
+      writeFileSync(spinePath, setRowState(spineSource(), id, 'parked'), 'utf8');
+      const before = await snapshot();
+      const { http, requests } = fakeHttp({});
+      const code = await runRouteTuple(argv(1, ['--approve', APPROVAL]), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/its spine row reads "parked"/);
+      await expectNothingWritten(before, requests);
+    });
+
+    it('a row whose sidecar record is NOT on disk is refused — under --approve the sidecar step only reads', async () => {
+      await seed();
+      writePayloads(
+        { ...report(), issue: id, branch },
+        { ...verdict({ riskClass: 'public-API-change' }), branchReviewed: branch },
+      );
+      const before = await snapshot();
+      const { http, requests } = fakeHttp({});
+      const code = await runRouteTuple(argv(1, ['--approve', APPROVAL]), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+      expect(code).toBe(1);
+      expect(stderr).toMatch(/--approve continues an already-routed STOP/);
+      await expectNothingWritten(before, requests);
+    });
+
+    it('CONTROL — the same stopped row WITHOUT --approve still stops and writes nothing', async () => {
+      await stopAndFlag();
+      const before = await snapshot();
+      const { http, requests } = fakeHttp({});
+      const code = await runRouteTuple(argv(1), deps({ http, landingHost: fakeLanding({ state: 'none' }) }));
+      expect(code).toBe(0);
+      expect(result()).toMatchObject({ disposition: 'stop', wrote: { spine: false, host: false, tracker: false } });
+      expect(result()).not.toHaveProperty('approved');
+      expect(spineSource()).toBe(before.spine);
+      expect(await rungOf()).toBe('needs-attention');
+      expect(requests).toHaveLength(0);
     });
   });
 

@@ -26,7 +26,7 @@ This ordering is **the** load-bearing invariant of the skill. Do them in this or
 
 - **Read the spine FIRST.** The spine is the write-ahead log (ADR-0002 WAL) — it is the authority for what rows the wave contains. Every other input refines a row the spine declares; nothing invents a row the spine doesn't have.
 - **Reconcile BEFORE re-dispatch.** Reconstruct every row, re-project the coarse ledger, run the done-reconcile, and flag the orphans/corrupts — then and only then hand the `redispatch` rows to `wave-start`. **No row is re-dispatched until reconciliation completes.** Re-dispatching before reconciling can duplicate landed work.
-- **needs-attention rows are PAUSED.** A row flagged needs-attention (corrupt/orphan sidecar, or a closed-unmerged PR) is **never** re-dispatched — it waits for a human disposition.
+- **needs-attention rows are PAUSED.** A row flagged needs-attention (corrupt/orphan sidecar, or a closed-unmerged PR) is **never** re-dispatched — it waits for a human disposition. A paused `public-api-approval-required` row, once approved, resumes via `route-tuple … --approve "<reason>"`.
 - **One-way heal.** The tracker claims are written FROM the reconstruction, never read INTO it. `resume()` never reads the tracker.
 
 ## Procedure

@@ -1,7 +1,7 @@
 /**
  * Exhaustive fixture-matrix test for the Stop-Condition state-machine.
  *
- * Covers every cell of the 11-state × 13-event matrix — 143 of them, asserted
+ * Covers every cell of the 11-state × 14-event matrix — 154 of them, asserted
  * exhaustively by the `matrix` table at the bottom of this file, which IS the
  * fixture matrix rather than a copy of one. Named, not pathed: the standalone
  * stop-condition-handling document this line used to cite for the matrix was
@@ -40,10 +40,10 @@ function stop(reason: string, severity: string): Outcome {
 const warn: Outcome = { type: 'warn', reason: 'wallclock-exceeded' };
 const noop: Outcome = { type: 'noop' };
 
-// ─── canonical 11×13 fixture matrix ─────────────────────────────────────────
+// ─── canonical 11×14 fixture matrix ─────────────────────────────────────────
 //
 // Rows  = ISSUE_STATES  (11 — incl. `parked`, ADR-0022)
-// Cols  = WAVE_EVENTS   (13)
+// Cols  = WAVE_EVENTS   (14 — incl. `human-approve`, ADR-0047)
 // Order matches the enum order in stop-condition-state-machine.ts
 //
 // Outcome abbreviations:
@@ -285,11 +285,29 @@ const matrix: Cell[] = [
   ['failed', 'worker-failed-transient', noop],
   ['abandoned', 'worker-failed-transient', noop],
   ['parked', 'worker-failed-transient', noop],
+
+  // ── human-approve column (ADR-0047, the narrow first slice) ─────────────────
+  // The Operator's approval past the public-API STOP. Legal ONLY from the two
+  // states that STOP is resolved from (and, being a STOP, leaves the row in):
+  // `reviewing` and `verdict-in`, each leading to `approved` — the state the
+  // ordinary approve reaches. Every other state is a no-op, which the routing
+  // verbs treat as a caller bug: it is never a way around the Reviewer.
+  ['planned', 'human-approve', noop],
+  ['dispatched', 'human-approve', noop],
+  ['report-in', 'human-approve', noop],
+  ['reviewing', 'human-approve', t('approved')],
+  ['verdict-in', 'human-approve', t('approved')],
+  ['re-dispatched', 'human-approve', noop],
+  ['approved', 'human-approve', noop],
+  ['pr-created', 'human-approve', noop],
+  ['failed', 'human-approve', noop],
+  ['abandoned', 'human-approve', noop],
+  ['parked', 'human-approve', noop],
 ];
 
 // ─── matrix completeness guard ────────────────────────────────────────────────
 
-it('fixture matrix covers all 143 cells', () => {
+it('fixture matrix covers all 154 cells', () => {
   expect(matrix).toHaveLength(ISSUE_STATES.length * WAVE_EVENTS.length);
 
   // Every (state, event) combination must appear exactly once.
@@ -311,13 +329,40 @@ it('fixture matrix covers all 143 cells', () => {
 
 // ─── snapshot test ────────────────────────────────────────────────────────────
 
-describe('transition — all 143 cells', () => {
+describe('transition — all 154 cells', () => {
   for (const [state, event, expected] of matrix) {
     it(`(${state}, ${event})`, () => {
       const result = transition(state, event);
       expect(result).toEqual(expected);
     });
   }
+});
+
+// ─── human-approve (ADR-0047 — the Operator's approval past the G3 STOP) ──────
+
+describe('human-approve — the continuation of the public-API STOP', () => {
+  it('reaches the state the ordinary approve reaches, from each state the STOP is resolved from', () => {
+    for (const state of ['reviewing', 'verdict-in'] as const) {
+      expect(transition(state, 'reviewer-approve-public-api')).toEqual(
+        stop('public-api-approval-required', 'blocking'),
+      );
+      expect(transition(state, 'human-approve')).toEqual(transition(state, 'reviewer-approve'));
+      expect(transition(state, 'human-approve')).toEqual(t('approved'));
+    }
+  });
+
+  it('is rejected (noop) from EVERY other state — the legal set is exactly the two', () => {
+    const legal = ISSUE_STATES.filter((s) => transition(s, 'human-approve').type !== 'noop');
+    expect(legal).toEqual(['reviewing', 'verdict-in']);
+  });
+
+  it('is unaffected by the riskClass promotion — it is never re-read as a Reviewer event', () => {
+    expect(transition('reviewing', 'human-approve', 'public-API-change')).toEqual(t('approved'));
+  });
+
+  it('human-approve is a registered WAVE_EVENTS value', () => {
+    expect(WAVE_EVENTS).toContain('human-approve');
+  });
 });
 
 // ─── worker-needs-context (#53 — four-status Worker Outcome) ──────────────────

@@ -1279,6 +1279,14 @@ const LOADED_CORPUS_CEILING_BYTES = 1_282_000; // RAISED by issue #1065 — see 
 // that sum rounded UP to the next full KB (1 KB = 1000 B): **1,282,000 B**. 871 B of headroom left.
 // Shared standing load NOT raised: its one touched file (+989 B) re-measures the class at
 // 164,240 B over the same 18 files (from 163,251 B; next full KB 165,000 < 168,000) — 3,760 B left.
+// NOT raised by issue #1064 (2026-09-28 — `route-tuple --approve "<reason>"`, the one-call resume of an
+// approved `public-api-approval-required` STOP, ADR-0047's first slice): wave-start's SKILL.md (+181 B),
+// start-mechanics.md (+27 B), wave-shared's routing-mechanics.md (+307 B), wave-close's
+// phase-4b-partial-arm.md (+10 B) and wave-resume's SKILL.md (+112 B) add 637 B. At anchor commit
+// `5784b52beec4b4761c52328c110355bbb2a0c624` the population measured 1,281,129 B; this row's edit
+// re-measures it at 1,281,766 B over the same 57 files (next full KB 1,282,000 = this value) — 234 B of
+// headroom left. Shared standing load NOT raised: routing-mechanics.md (+307 B) re-measures the class at
+// 164,547 B over the same 18 files (next full KB 165,000 < 168,000) — 3,453 B left.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

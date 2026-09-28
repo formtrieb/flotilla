@@ -81,6 +81,28 @@
  * state an ordinary approve reaches, and a ruled changes-requested lands on the
  * cap-exhaustion STOP rather than buying the row another round.
  *
+ * ## The Operator's approval past the public-API STOP (`--approve`)
+ *
+ * A `public-API-change` row the Reviewer approved stops at
+ * `public-api-approval-required` and writes nothing — the G3 guard. Once the
+ * Operator has approved the landing, `--approve "<the Operator's reason>"` is
+ * the continuation (ADR-0047's narrow first slice): this verb re-runs the SAME
+ * sequence from the same tuple, confirms the row routes onto exactly that STOP,
+ * fires the `human-approve` event from the state the STOP was resolved from
+ * (reaching `approved`, the state an ordinary approve reaches), and then runs
+ * the ordinary approved terminator with three additions: an `## Operator
+ * approval` section in the PR body quoting the reason, the approval recorded in
+ * the spine (a coordinator-sourced disclosure at `resolved-in-slice`, written in
+ * the same flush as `pr-created` and the PR cell), and the needs-attention flag
+ * cleared on the tracker before the `in-review` rung. It is never a way around
+ * the Reviewer: a row that routes anywhere else — an ordinary approve, a
+ * re-dispatch, any other STOP — is refused with exit 1 and nothing written, and
+ * so is a row whose sidecar record is not already on disk (under `--approve`
+ * the sidecar step may only READ: the record was durable before the STOP).
+ * The reason is held to the same rule as `--ruling` (`rulingViolation`): a
+ * sentence a reader can quote, never a bare token. Re-runs are idempotent by
+ * the approve path's own rules.
+ *
  * ## What a reuse preserves — one rule for the body AND the title
  *
  * On a reuse this verb keeps the LIVE PR's authored content and writes its own
@@ -140,13 +162,20 @@ import {
   type SidecarReader,
 } from './sidecar';
 import {
+  neutralizeForeignTrackerIds,
   renderVerdictSection,
   validateReviewerVerdict,
   type ReviewerVerdict,
 } from './reviewer-verdict-schema';
-import { createSpineStore, defaultSpineIo, type SpineIo, type SpineStore } from './spine-store';
+import {
+  createSpineStore,
+  defaultSpineIo,
+  normalizeDisclosureText,
+  type SpineIo,
+  type SpineStore,
+} from './spine-store';
 import { transition, type IssueState, type Outcome } from './stop-condition-state-machine';
-import { verdictToRouting, type RuledRound, type Verdict } from './verdict-to-event';
+import { rulingViolation, verdictToRouting, type RuledRound, type Verdict } from './verdict-to-event';
 import {
   outcomeToEvent,
   validateWorkerReport,
@@ -264,6 +293,13 @@ export interface PrBodyParts {
   summary: string;
   /** The engine-rendered `## Reviewer verdict` section (tracker ids already neutralised). */
   verdictSection: string;
+  /**
+   * The `## Operator approval` section — present only on a `--approve`
+   * landing (ADR-0047). It sits BELOW the verdict section on purpose: the
+   * summary cut ({@link workerSummaryFromBody}) drops everything from the
+   * verdict heading down, so a re-run can never stack a second approval.
+   */
+  approvalSection?: string;
   /** The store-kind close phrase — the ONE tracker id the body may name. */
   closePhrase: string;
 }
@@ -277,7 +313,12 @@ export interface PrBodyParts {
  * phrase, and a body that carries it is a body the guard lets through.
  */
 export function composePrBody(parts: PrBodyParts): string {
-  return [parts.summary.trim(), parts.verdictSection.trim(), parts.closePhrase.trim()]
+  return [
+    parts.summary.trim(),
+    parts.verdictSection.trim(),
+    (parts.approvalSection ?? '').trim(),
+    parts.closePhrase.trim(),
+  ]
     .filter((section) => section.length > 0)
     .join('\n\n');
 }
@@ -459,6 +500,7 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
     { canonical: '--reports-dir', value: 'one', valueType: 'dir' },
     { canonical: '--verdicts-dir', value: 'one', valueType: 'dir' },
     { canonical: '--ruling', value: 'one', valueType: 'text' },
+    { canonical: '--approve', value: 'one', valueType: 'text' },
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
@@ -475,6 +517,10 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
     '  empty refused; never together with --title) — for a title quoting a git command.',
     "  --ruling is the Operator's stated reason for a Reviewer-only round ABOVE the",
     '  re-dispatch cap, and the only thing that admits an --iter above it.',
+    "  --approve <text> is the Operator's stated reason for landing a row stopped at",
+    '  public-api-approval-required: it fires human-approve and runs the approve path',
+    '  (PR body approval section, spine pr-created + PR url + recorded approval, flag',
+    '  cleared, in-review). Refused, with nothing written, on a row not at that stop.',
   ],
   outputNote: 'a single JSON result on stdout',
   // Issue #913. THREE shapes, one per `disposition`, read off the three
@@ -494,7 +540,8 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
       'wrote: { spine, host, tracker }, ... }',
     trail: 'the rest follows the disposition',
     continuation: [
-      '         pr-created adds:   branch, prUrl, title, titleSource, ruled?, reportOutcome',
+      '         pr-created adds:   branch, prUrl, title, titleSource, ruled?, approved?, reportOutcome',
+      '         approved (--approve only): { event: human-approve, from, reason, disclosure }',
       '         re-dispatched adds: reason, nextIteration, next: [ <step> ]',
       '         stop adds:         stop: { phase, reason, severity }, ruled?, next: <text>',
       '         sidecar-check:     recovered / repaired: [ report | verdict ] rewritten from the payload',
@@ -561,6 +608,82 @@ class RouteTupleRefusal extends Error {
   constructor(message: string) {
     super(message);
   }
+}
+
+// ─── The Operator's approval (`--approve`, ADR-0047's first slice) ───────────
+
+/** The one STOP `--approve` continues. */
+const APPROVABLE_STOP = 'public-api-approval-required';
+
+/**
+ * The spine row states a row stopped at the public-API STOP can be in. The STOP
+ * writes nothing, so the row still reads whatever its dispatch left
+ * (`dispatched`, or `re-dispatched` on a cap=1 second round; the hand-driven
+ * mid-states are admitted too), and `pr-created` is the idempotent re-run of an
+ * approval that already reached the spine. `planned` (never dispatched) and the
+ * three terminals are refused before anything is read.
+ */
+const APPROVABLE_ROW_STATES: readonly string[] = [
+  'dispatched',
+  'report-in',
+  'reviewing',
+  'verdict-in',
+  're-dispatched',
+  'approved',
+  'pr-created',
+];
+
+/** The heading of the PR-body section a `--approve` landing adds. */
+const APPROVAL_HEADING = '## Operator approval';
+
+/** One line, for a routed outcome named inside a refusal. */
+function describeOutcome(o: Outcome): string {
+  if (o.type === 'transition') return `a transition to ${o.nextState}`;
+  if (o.type === 'stop') return `the ${o.reason} STOP`;
+  return `a ${o.type}`;
+}
+
+/**
+ * The `--approve` refusal for a row that does not route onto the public-API
+ * STOP. Thrown before any spine, host or tracker write.
+ */
+function notAtApprovableStop(id: string, where: string): RouteTupleRefusal {
+  return new RouteTupleRefusal(
+    `--approve continues ONLY a row stopped at ${APPROVABLE_STOP}, and row ${JSON.stringify(id)} ` +
+      `does not route there: ${where}. The approval is not a way around the Reviewer — route the ` +
+      'tuple without --approve. Nothing written.',
+  );
+}
+
+/**
+ * The PR-body section recording the Operator's approval: the STOP it answered,
+ * the iteration, and the reason quoted on ONE line (a reason spanning lines
+ * could otherwise put a close-phrase-shaped line of its own into the body).
+ * Every tracker-id-shaped token in the reason except the row's own is
+ * neutralised, exactly as the verdict render does (mention discipline).
+ */
+function renderApprovalSection(reason: string, id: string, iteration: number): string {
+  const quoted = neutralizeForeignTrackerIds(normalizeDisclosureText(reason), id);
+  return [
+    APPROVAL_HEADING,
+    '',
+    `**Approved for landing by the Operator** past \`${APPROVABLE_STOP}\` ` +
+      `(Reviewer verdict: approve, iteration ${iteration}). Reason: ${quoted}`,
+  ].join('\n');
+}
+
+/** The spine's durable record of the approval — one disclosure line, normalised. */
+function approvalDisclosureText(reason: string, iteration: number): string {
+  return normalizeDisclosureText(
+    `Operator approval past ${APPROVABLE_STOP} (iteration ${iteration}), landed via route-tuple --approve: ${reason}`,
+  );
+}
+
+/** What a `--approve` run records on its result, beside `ruled`. */
+interface ApprovedRecord {
+  event: 'human-approve';
+  from: IssueState;
+  reason: string;
 }
 
 // ─── The sidecar step (7.0) ──────────────────────────────────────────────────
@@ -1008,6 +1131,26 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
     );
   }
 
+  // ADR-0047's first slice: the Operator's approval past the public-API STOP.
+  // Held to the ruling's rule — a stated reason, never a bare token — and
+  // refused here, usage-first, before any config, spine or sidecar is read.
+  const approval = flag(args, '--approve');
+  if (approval === undefined && args.includes('--approve')) {
+    return usage(
+      "route-tuple: --approve takes the Operator's reason as its value — the approval is recorded " +
+        'in the PR body and the spine, so pass it as a quoted sentence a reader can quote back',
+    );
+  }
+  if (approval !== undefined) {
+    const violation = rulingViolation(approval);
+    if (violation !== undefined) {
+      return usage(
+        `route-tuple: the --approve reason ${violation}. The approval is auditable only if it states ` +
+          'WHY the Operator approved — a sentence a reader can quote, never a bare token. Nothing written.',
+      );
+    }
+  }
+
   const configPath = flag(args, '--config') ?? 'wave.config.json';
   let config: WaveConfig;
   try {
@@ -1041,6 +1184,12 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
     );
     return 1;
   }
+  if (approval !== undefined && !APPROVABLE_ROW_STATES.includes(row.state)) {
+    process.stderr.write(
+      `error: route-tuple: ${notAtApprovableStop(id, `its spine row reads ${JSON.stringify(row.state)}`).message}\n`,
+    );
+    return 1;
+  }
 
   const steps: StepResult[] = [];
   const push = (step: string, status: StepStatus, detail: Record<string, unknown> = {}): void => {
@@ -1062,7 +1211,21 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       reportPayloadPath: isAbsolute(reportPath) ? reportPath : resolve(repoRoot, reportPath),
       verdictPayloadPath: isAbsolute(verdictPath) ? verdictPath : resolve(repoRoot, verdictPath),
       reader: deps.sidecarReader ?? fsSidecarReader,
-      writer: deps.sidecarWriter ?? fsSidecarWriter,
+      // Under --approve the sidecar step may only READ. The record was durable
+      // before the STOP (the routing that raised it ran this same step), so a
+      // record that would need recovering or repairing now is a different tuple
+      // from the one the Operator approved — refused before a byte lands.
+      writer:
+        approval === undefined
+          ? (deps.sidecarWriter ?? fsSidecarWriter)
+          : (dir, file) => {
+              throw new RouteTupleRefusal(
+                `--approve continues an already-routed STOP, so the sidecar record must already be on ` +
+                  `disk and agree with the payload — but ${join(dir, file)} would have to be written. ` +
+                  'Route the tuple without --approve first (it recovers the record and stops again), ' +
+                  'then approve. Nothing written.',
+              );
+            },
       // Loud where the write verbs are loud, and on the same channel: a sweep
       // finding is an operator finding about the DIRECTORY, never a failure of
       // the record this step just persisted.
@@ -1092,6 +1255,12 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       outcome: workerOutcome,
     });
 
+    if (
+      approval !== undefined &&
+      !(workerOutcome.type === 'transition' && workerOutcome.nextState === 'report-in')
+    ) {
+      throw notAtApprovableStop(id, `its worker phase routes to ${describeOutcome(workerOutcome)}`);
+    }
     if (workerOutcome.type === 'stop') {
       return finishStop(steps, id, iter, 'route-outcome', workerOutcome);
     }
@@ -1141,10 +1310,38 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       ...(ruled === undefined ? {} : { ruled }),
     });
 
-    if (reviewerOutcome.type === 'stop') {
+    // ── 3a. The Operator's approval (`--approve`, ADR-0047) ─────────────────
+    // Only a row that routes onto the public-API STOP is continued, and only by
+    // the state machine's own `human-approve` cell — from the state that STOP
+    // was resolved from — never by a direct state write.
+    let approved: ApprovedRecord | undefined;
+    if (approval !== undefined) {
+      if (!(reviewerOutcome.type === 'stop' && reviewerOutcome.reason === APPROVABLE_STOP)) {
+        throw notAtApprovableStop(
+          id,
+          `its verdict ${JSON.stringify(verdict.verdict)} (risk ${JSON.stringify(verdict.riskClass)}) ` +
+            `routes to ${describeOutcome(reviewerOutcome)}`,
+        );
+      }
+      const approveOutcome = transition(reviewerState, 'human-approve');
+      if (approveOutcome.type !== 'transition' || approveOutcome.nextState !== 'approved') {
+        throw new RouteTupleRefusal(
+          `human-approve resolved ${describeOutcome(approveOutcome)} from ${JSON.stringify(reviewerState)} ` +
+            '— the public-API STOP is only ever resolved from a state human-approve is legal in, so this ' +
+            'is a caller bug to investigate. Nothing written.',
+        );
+      }
+      approved = { event: 'human-approve', from: reviewerState, reason: approval.trim() };
+      push('operator-approve', 'performed', {
+        from: reviewerState,
+        event: 'human-approve',
+        outcome: approveOutcome,
+        reason: approved.reason,
+      });
+    } else if (reviewerOutcome.type === 'stop') {
       return finishStop(steps, id, iter, 'route-verdict', reviewerOutcome, ruled);
     }
-    if (reviewerOutcome.type !== 'transition') {
+    if (approved === undefined && reviewerOutcome.type !== 'transition') {
       throw new RouteTupleRefusal(
         `route-verdict resolved a ${reviewerOutcome.type} for verdict ${JSON.stringify(verdict.verdict)} ` +
           `at iteration ${iter} from state ${JSON.stringify(reviewerState)} — with --state derived by ` +
@@ -1152,7 +1349,7 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
           'is a caller bug to investigate. Nothing written.',
       );
     }
-    if (reviewerOutcome.nextState === 're-dispatched') {
+    if (reviewerOutcome.type === 'transition' && reviewerOutcome.nextState === 're-dispatched') {
       return finishRedispatch({
         steps,
         push,
@@ -1180,6 +1377,7 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       verdictIter: sidecars.verdictIter,
       report,
       ruled,
+      ...(approved === undefined ? {} : { approved }),
       ...(titleFromFile === undefined ? {} : { titleFromFile }),
     });
   } catch (err) {
@@ -1224,7 +1422,10 @@ function finishStop(
     next:
       `flag the row for a human: issue-store flag ${id} --kind ` +
       `${outcome.severity === 'blocking' && outcome.reason !== 'reviewer-questions-blocking' && outcome.reason !== 'public-api-approval-required' ? 'terminal-failure' : 'recoverable-stop'} ` +
-      '--question "<the decision needed>" --option "<A>" --option "<B>"',
+      '--question "<the decision needed>" --option "<A>" --option "<B>"' +
+      (outcome.reason === APPROVABLE_STOP
+        ? `; once the Operator approves, re-run this same route-tuple call with --approve "<the Operator's reason>"`
+        : ''),
   });
   return 0;
 }
@@ -1315,12 +1516,14 @@ async function finishApproved(input: {
   report: WorkerReport;
   /** Present iff this landing came through an Operator-ruled above-cap round. */
   ruled?: RuledRound;
+  /** Present iff this landing is the Operator's `--approve` past the public-API STOP. */
+  approved?: ApprovedRecord;
   /** The `--title-file` content, already read and validated by the caller (issue #1065). */
   titleFromFile?: string;
 }): Promise<number> {
   const { steps, push, args, deps, config, spineStore, id, iter, row, anchor, verdict, report, ruled } =
     input;
-  const { titleFromFile } = input;
+  const { titleFromFile, approved } = input;
 
   const branch = row.branch;
   if (!branch) {
@@ -1370,7 +1573,14 @@ async function finishApproved(input: {
       : verdict.workerReportDigest;
 
   const closePhrase = closePhraseFor(config.store.kind, id);
-  const body = composePrBody({ summary, verdictSection, closePhrase });
+  const body = composePrBody({
+    summary,
+    verdictSection,
+    ...(approved === undefined
+      ? {}
+      : { approvalSection: renderApprovalSection(approved.reason, id, input.verdictIter) }),
+    closePhrase,
+  });
   const { title, titleSource } = resolveTitle({
     args,
     existing,
@@ -1459,7 +1669,28 @@ async function finishApproved(input: {
     spineStore.setRowPrCell(id, prUrl);
     push('spine-row-pr', 'performed', { from: row.prCell, prCell: prUrl });
   }
-  const spineWrote = !alreadyPrCreated || !alreadyPrCell;
+  // ── 8a. the recorded approval (`--approve` only) ─────────────────────────
+  // In the SAME flush as the two writes above, so a crash never leaves a
+  // `pr-created` row whose approval the spine does not name. Recorded as a
+  // coordinator-sourced disclosure dispositioned `resolved-in-slice` at once:
+  // durable and quotable at close, never an open item the archive gate counts.
+  let approvalRef: string | undefined;
+  let approvalWrote = false;
+  if (approved !== undefined) {
+    const text = approvalDisclosureText(approved.reason, input.verdictIter);
+    const prior = spineStore.disclosures().find((d) => d.rowId === id && d.text === text);
+    if (prior !== undefined) {
+      approvalRef = prior.ref;
+      push('spine-approval', 'performed-before', { ref: prior.ref });
+    } else {
+      const recorded = spineStore.addDisclosure({ rowId: id, iter, source: 'coordinator', text });
+      spineStore.setDisposition(recorded.ref, 'resolved-in-slice');
+      approvalRef = recorded.ref;
+      approvalWrote = true;
+      push('spine-approval', 'performed', { ref: recorded.ref, disposition: 'resolved-in-slice' });
+    }
+  }
+  const spineWrote = !alreadyPrCreated || !alreadyPrCell || approvalWrote;
   if (spineWrote) spineStore.flush();
 
   // ── 9. rung transition ───────────────────────────────────────────────────
@@ -1467,6 +1698,20 @@ async function finishApproved(input: {
   // crash between the two leaves a row the reconciler reads as terminal and
   // heals the tracker from — the recoverable direction.
   const store = await resolveStore(args, deps.store);
+  // `--approve` only: the Operator's answer IS the answer the flag was waiting
+  // for, so it is cleared here — after the spine records the approval (the WAL
+  // order ADR-0047 names), before the rung, so the rung reads `in-review`.
+  let flagCleared = false;
+  if (approved !== undefined) {
+    const flagged = await store.read(id);
+    if (flagged.status === 'needs-attention') {
+      await store.clearFlag(id);
+      flagCleared = true;
+      push('clear-flag', 'performed', { from: 'needs-attention' });
+    } else {
+      push('clear-flag', 'performed-before', { trackerStatus: flagged.status });
+    }
+  }
   const before = await store.read(id);
   let rungStatus: StepStatus;
   let landedStatus: string;
@@ -1506,11 +1751,12 @@ async function finishApproved(input: {
     title,
     titleSource,
     ...(ruled === undefined ? {} : { ruled }),
+    ...(approved === undefined ? {} : { approved: { ...approved, disclosure: approvalRef } }),
     steps,
     wrote: {
       spine: spineWrote,
       host: prResult.outcome === 'created' || prResult.updated === true,
-      tracker: rungStatus === 'performed',
+      tracker: rungStatus === 'performed' || flagCleared,
     },
     reportOutcome: report.outcome,
   });

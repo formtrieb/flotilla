@@ -985,7 +985,7 @@ Evidence for the gap this closes — the six-round wave that ran this by hand ev
 | `stop.reason` | `--kind` | Why |
 |---|---|---|
 | `reviewer-questions-blocking` | `recoverable-stop` | needs an Operator decision; resumable |
-| `public-api-approval-required` | `recoverable-stop` | human confirm before PR; resumable |
+| `public-api-approval-required` | `recoverable-stop` | human confirm; resume: `route-tuple … --approve "<reason>"` |
 | `re-dispatch-cap-exhausted` | `recoverable-stop` | cap hit; the Operator decides next |
 | `worker-stalled` (warn) | `recoverable-stop` | inspect; may still be running |
 | `worker-failed` | `terminal-failure` | confirmed failure; re-plan |
