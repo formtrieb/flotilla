@@ -47,7 +47,20 @@
  *       `report.issue` names a different row than --id / the payload's canonical
  *       digest differs from `--expect-digest` (NOTHING written)
  *   2 — usage / unreadable-or-unparseable <json-file> / a --id that is not a bare id
- *       / an `--expect-digest` value that is not a digest
+ *       / an `--expect-digest` value that is not a digest / (write-verdict
+ *       `--payload-encoding base64`) a file that is not valid base64, or whose
+ *       decoded text is not valid JSON — the message names which of the two
+ *
+ * ## Why write-verdict can read its payload as base64
+ *
+ * The verdict Scribe used to copy a long JSON verdict — nested quotes, arrows,
+ * HTML entities — out of prose into a file, and in two of five rounds of one
+ * wave its copy missed `--expect-digest` and no sidecar was written before
+ * routing. The driver now hands it the base64 token of the UTF-8 bytes of that
+ * JSON (plain ASCII, nothing to re-type), and `--payload-encoding base64` makes
+ * this verb decode it first; the digest, validation and sidecar are then exactly
+ * those of the JSON path. Without the flag (or with `json`) the verb reads the
+ * file as JSON, byte-for-byte as before — older drivers keep working.
  *
  * ## Why the write verbs are stricter than the reader (the Scribe fidelity gates)
  *
@@ -219,6 +232,9 @@ const WRITE_FIDELITY_NOTES: readonly string[] = [
   '  digest (key-order independent, computed over the payload as read) differs, naming both.',
 ];
 
+/** The values `write-verdict --payload-encoding` accepts; `json` is the default. */
+const PAYLOAD_ENCODINGS = ['json', 'base64'] as const;
+
 /**
  * The six verbs this module runs, each declaring its own contract beside its own
  * runner (ADR-0051 decision 2).
@@ -328,6 +344,7 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
       { canonical: '--verdicts-dir', aliases: ['--dir'], value: 'one', valueType: 'dir', required: true },
       { canonical: '--id', value: 'one', valueType: 'id', required: true },
       { canonical: '--iter', value: 'one', valueType: 'int', required: true },
+      { canonical: '--payload-encoding', value: 'one', valueType: 'enum', placeholder: '<json|base64>' },
       { canonical: '--expect-digest', value: 'one', valueType: 'text', placeholder: '<digest>' },
     ],
     positionals: { kind: 'fixed', count: 1, labels: ['<json-file>'] },
@@ -336,6 +353,9 @@ export const ROUTE_CONTRACTS: Readonly<Record<string, VerbContract>> = {
     notes: [
       '  --dir is accepted as an alias of --verdicts-dir. The payload file is named EITHER',
       '  by --verdict-file or as the leading positional — never both (a mixed call is a usage error).',
+      '  --payload-encoding base64 reads the payload file as the base64 of the UTF-8 JSON (whitespace',
+      '  tolerated) and decodes it first; invalid base64, or decoded text that is not JSON, exits 2',
+      '  naming which. Default json: the file is read as JSON, as before.',
       ...WRITE_FIDELITY_NOTES,
     ],
     outputNote: 'text (the written file path), not JSON',
@@ -681,12 +701,32 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
     );
     return 2;
   }
+  const encoding = flag(args, contract, 'payload-encoding');
+  if (hasFlag(contract, args, 'payload-encoding')) {
+    if (encoding === undefined || !(PAYLOAD_ENCODINGS as readonly string[]).includes(encoding)) {
+      process.stderr.write(
+        `error: ${spec.label}: --payload-encoding takes one of ${PAYLOAD_ENCODINGS.join('|')}` +
+          (encoding === undefined ? '' : `, got ${JSON.stringify(encoding)}`) +
+          ' — nothing written.\n',
+      );
+      return 2;
+    }
+  }
   let value: unknown;
-  try {
-    value = JSON.parse(readFileSync(file, 'utf-8'));
-  } catch (err) {
-    process.stderr.write(`error: cannot read/parse ${file}: ${(err as Error).message}\n`);
-    return 2;
+  if (encoding === 'base64') {
+    const read = readBase64JsonPayload(file);
+    if ('error' in read) {
+      process.stderr.write(`error: ${spec.label}: --payload-encoding base64: ${read.error} — nothing written.\n`);
+      return 2;
+    }
+    value = read.value;
+  } else {
+    try {
+      value = JSON.parse(readFileSync(file, 'utf-8'));
+    } catch (err) {
+      process.stderr.write(`error: cannot read/parse ${file}: ${(err as Error).message}\n`);
+      return 2;
+    }
   }
   // The structural validator (shared with the reader, so permissive about
   // extra keys) and the write-only unknown-key predicate, reported together:
@@ -761,6 +801,52 @@ function runWriteSidecar(args: string[], spec: WriteSidecarSpec): number {
   }
   warnAboutMisnamedSidecars(dir, spec);
   return 0;
+}
+
+/** The standard base64 alphabet, whole 4-character groups, `=` padding only at the end. */
+const BASE64_TOKEN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/**
+ * Read a `--payload-encoding base64` payload file: strip whitespace, decode the
+ * base64 STRICTLY (Node's own decoder silently skips characters outside the
+ * alphabet, which would turn a corrupted token into a shorter, different
+ * payload), decode the bytes as UTF-8 (fatal on an invalid sequence), then
+ * parse the JSON. Each failure names its stage — base64 or JSON — because the
+ * two point a reader at different culprits: a mangled token versus a token
+ * that faithfully encodes something that was never JSON.
+ *
+ * Module-local on purpose: its one caller is the write body above, and the
+ * driver's encoder is pinned to it by running the real verb (route-cli.spec.ts).
+ */
+function readBase64JsonPayload(file: string): { value: unknown } | { error: string } {
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    return { error: `cannot read ${file}: ${(err as Error).message}` };
+  }
+  const token = raw.replace(/\s+/g, '');
+  if (token === '' || !BASE64_TOKEN.test(token)) {
+    const stray = /[^A-Za-z0-9+/=]/.exec(token);
+    const why =
+      token === ''
+        ? 'it holds no token'
+        : stray
+          ? `character ${JSON.stringify(stray[0])} is outside the base64 alphabet`
+          : 'its length or padding is not a whole base64 token';
+    return { error: `invalid base64 in ${file}: ${why}` };
+  }
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(token, 'base64'));
+  } catch {
+    return { error: `invalid base64 in ${file}: the decoded bytes are not UTF-8 text` };
+  }
+  try {
+    return { value: JSON.parse(text) };
+  } catch (err) {
+    return { error: `valid base64, but invalid JSON after decoding ${file}: ${(err as Error).message}` };
+  }
 }
 
 /**

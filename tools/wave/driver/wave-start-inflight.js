@@ -192,6 +192,41 @@ function canonicalDigest(value) {
 }
 // CANONICAL-DIGEST:END
 
+// ── the verdict Scribe's payload encoding (base64 over UTF-8, pure JS) ──
+// The verdict Scribe is handed its payload as ONE base64 token rather than as
+// inline JSON: a long verdict carries nested quotes, arrows, HTML entities and
+// backslashes, and a model copying it through prose re-typed it often enough
+// that `--expect-digest` refused the write in two of five rounds of one wave.
+// A base64 token is plain ASCII with nothing to escape. `write-verdict
+// --payload-encoding base64` decodes it; the digest stays computed over the
+// decoded JSON, so the fidelity check is unchanged. This script can import
+// nothing and no base64 global is guaranteed in the Workflow runtime, so the
+// encoder is written out here; `route-cli.spec.ts` evaluates the region between
+// the two markers below, pins it to an independent reference (`Buffer`), and
+// round-trips its output through the real verb's decoder.
+// BASE64-UTF8:BEGIN
+function base64Utf8(text) {
+  const bytes = []
+  for (const ch of text) {
+    let cp = ch.codePointAt(0)
+    if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd
+    if (cp < 0x80) bytes.push(cp)
+    else if (cp < 0x800) bytes.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f))
+    else if (cp < 0x10000) bytes.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f))
+    else bytes.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f))
+  }
+  const abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0)
+    out += abc[(n >> 18) & 63] + abc[(n >> 12) & 63]
+    out += i + 1 < bytes.length ? abc[(n >> 6) & 63] : '='
+    out += i + 2 < bytes.length ? abc[n & 63] : '='
+  }
+  return out
+}
+// BASE64-UTF8:END
+
 // ── Scribe compose-time constants (Coordinator-filled, like depsSetup) ──
 // REPO_ROOT is the one ABSOLUTE-by-necessity constant: Scribes run in the
 // session cwd (no worktree isolation), so their brief carries this literal
@@ -1289,8 +1324,9 @@ verdict, branchReviewed, riskClass, workerReportDigest, acVerification[], review
 }
 
 // ── Scribe: persist ONE sidecar at agent-return through the paired write verb ──
-// The brief carries the already-validated payload byte-exact (JSON.stringify) —
-// nothing is re-typed. The Scribe writes it to a temp file VERBATIM, runs the
+// The brief carries the already-validated payload byte-exact (JSON.stringify;
+// for a VERDICT, that JSON base64-encoded — see base64Utf8 above) — nothing is
+// re-typed. The Scribe writes it to a temp file VERBATIM, runs the
 // engine verb (engine-computed <id>-<iter>.md name, fenced json, mkdir -p,
 // last-writer-wins), retries once on a non-zero exit, and returns { ok, path }.
 function scribeBrief(kind, issue, iter, payload) {
@@ -1320,12 +1356,38 @@ function scribeBrief(kind, issue, iter, payload) {
   // taken over it parsed back — exactly what the verb will read from a faithful
   // copy — rather than over `payload` itself, so a value JSON cannot carry (an
   // `undefined` field) can never make a faithful Scribe's write mismatch.
+  //
+  // A VERDICT is handed over as the base64 token of that same serialisation
+  // (`b64`), in its own fence, and its write call adds `--payload-encoding
+  // base64`; the digest is still taken over the JSON, which is what the verb
+  // decodes the token to. No raw verdict JSON reaches the brief. The report
+  // path is unchanged (it never failed this way): its payload is the JSON line
+  // itself, kept as a `${embedded}` source line of its own below, where
+  // skill-schema-drift.spec.ts reads it (a JSON serialisation has no leading or
+  // trailing whitespace, so the trim removes only the two template newlines).
   const embedded = JSON.stringify(payload)
   const digest = canonicalDigest(JSON.parse(embedded))
+  const b64 = kind === 'verdict'
+  const ext = b64 ? 'b64' : 'json'
+  const payloadBlock = b64
+    ? `\`\`\`\n${base64Utf8(embedded)}\n\`\`\``
+    : `
+${embedded}
+`.trim()
   const writeCall =
     kind === 'report'
       ? `${WAVE_CLI} write-report --report-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --reports-dir "${dir}" --id ${issue.id} --iter ${iter} --expect-digest ${digest}`
-      : `${WAVE_CLI} write-verdict --verdict-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" --verdicts-dir "${dir}" --id ${issue.id} --iter ${iter} --expect-digest ${digest}`
+      : `${WAVE_CLI} write-verdict --verdict-file "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.b64" --verdicts-dir "${dir}" --id ${issue.id} --payload-encoding base64 --iter ${iter} --expect-digest ${digest}`
+  const what = b64
+    ? 'the base64 token below — the ONE line inside the fenced block just above step 3, without the fence lines —'
+    : 'the payload below — the single line that follows this paragraph —'
+  const b64Note = b64
+    ? `
+   **The token IS the verdict, base64-encoded: plain ASCII, nothing in it to escape.** Copy
+   it as it stands — never decode, re-encode, re-wrap or "repair" it. The verb decodes it
+   (\`--payload-encoding base64\`); whitespace inside it is tolerated, any other change is refused.
+`
+    : ''
   // The producing agent's OWN pipeline label — Stage 1 (`worker:<id>`) for a
   // report, Stage 3 (`review:<id>`) for a verdict — always the stage
   // immediately before this Scribe's own in the SAME pipeline() fan-out
@@ -1410,10 +1472,10 @@ normalizes that one itself and tells you it did.)
    and your \`notice\` is then the only trace it happened. Either way the fix is the
    Coordinator's precondition — dispatch the wave from the repo root — never a workaround
    of yours.
-2. Write the payload below — the single line that follows this paragraph — EXACTLY,
+2. Write ${what} EXACTLY,
    byte-for-byte (no edits), to this ABSOLUTE path, spelled here shell-quoted exactly
    as step 3 spells it:
-   \`"${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json"\`
+   \`"${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.${ext}"\`${b64Note}
    ABSOLUTE because the verb reads that argument against the process cwd, so a bare
    relative name would put back into step 3 exactly the dependency step 1 exists to
    retire. QUOTED because an absolute repo root is precisely where spaces and non-ASCII
@@ -1428,7 +1490,7 @@ normalizes that one itself and tells you it did.)
    a file, stdout with no redirect at all, or an interpreter reading stdin — and every JSON
    payload carries braces on its first line by construction. If you do use a
    heredoc, its redirect target is that same path, quoted —
-   \`cat > "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.json" <<'EOF'\` — and
+   \`cat > "${REPO_ROOT}/.flotilla/tmp/${kind}-${issue.id}-${iter}.${ext}" <<'EOF'\` — and
    the directory must already exist, from an equally quoted
    \`mkdir -p "${REPO_ROOT}/.flotilla/tmp"\` in its own prior call. The name is
    deterministic, so a retry overwrites rather than accumulates.
@@ -1459,14 +1521,14 @@ normalizes that one itself and tells you it did.)
    NOT apply) was blocked as expected, confirming the harness can observe a
    block and the all-pass result above is not an artifact of a check that
    cannot fail.
-${embedded}
+${payloadBlock}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
    ${writeCall}
    (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, a key the schema does not declare, a payload naming a DIFFERENT row than --id, or a digest mismatch; exit 2 → usage/unreadable, or a --id that is not a bare id)
    Every path in that command is absolute and shell-quoted; nothing in it depends on a
    previous call having moved you anywhere.
-   **\`--expect-digest ${digest}\` is the digest of the payload line above, computed by the
+   **\`--expect-digest ${digest}\` is the digest of ${b64 ? 'the verdict JSON that token decodes to' : 'the payload line above'}, computed by the
    script that handed it to you.** The verb recomputes it over the file you wrote and refuses
    a mismatch, naming both digests: a mismatch means your file is NOT that line byte-for-byte —
    a reworded list element, a dropped or added field, a re-typed value. It is not yours to

@@ -1547,3 +1547,157 @@ describe('the reader stays permissive — a HISTORICAL sidecar carrying an extra
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ─── write-verdict --payload-encoding base64 ────────────────────────────────
+//
+// The verdict Scribe copied a long JSON verdict out of prose and missed
+// --expect-digest in two of five rounds of one wave. The driver now hands it
+// the base64 token of that JSON instead, and this flag decodes it. The driver's
+// encoder is evaluated from its own marked region and round-tripped through
+// the REAL verb here — that is the pin between the encoder and this decoder.
+
+const DRIVER_SOURCE = readFileSync(join(__dirname, '..', 'driver', 'wave-start-inflight.js'), 'utf-8');
+
+/** The driver's inlined `base64Utf8`, evaluated as the harness would run it. */
+function driverBase64Utf8(): (text: string) => string {
+  const begin = DRIVER_SOURCE.indexOf('// BASE64-UTF8:BEGIN');
+  const end = DRIVER_SOURCE.indexOf('// BASE64-UTF8:END');
+  expect(begin).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(begin);
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  return new Function(`${DRIVER_SOURCE.slice(begin, end)}\nreturn base64Utf8`)();
+}
+
+/** A verdict carrying every character class the live failures had. */
+const HARD_VERDICT = {
+  ...writtenVerdict,
+  workerReportDigest: 'said "done" → 20/20; C:\\tmp\\x &amp; <b>bold</b>',
+  acVerification: [
+    { ac: 'nested "quotes \'inside\' quotes" ⇒ ✓', met: 'met', evidence: '&lt;tag&gt; Grüße – 漢字 🚀 👩‍💻 \\n' },
+  ],
+  reviewerFocusItems: ['a real newline:\nand a tab:\tend', 'backslash-quote: \\"'],
+};
+
+/** One write-verdict call on a RAW payload file (the base64 path is not JSON). */
+function runWriteRaw(raw: string, extra: string[]): WriteRun {
+  const dir = tmp();
+  const target = join(dir, 'verdicts');
+  const f = join(dir, 'p.b64');
+  writeFileSync(f, raw);
+  const io = captureBoth();
+  const code = runWriteVerdict(['--verdict-file', f, '--verdicts-dir', target, '--id', 'FOR-6', '--iter', '1', ...extra]);
+  io.restore();
+  const written = fsReader.list(target);
+  const body = written.length ? readFileSync(join(target, written[0]), 'utf-8') : null;
+  rmSync(dir, { recursive: true, force: true });
+  return { code, out: io.out(), err: io.err(), written, body };
+}
+
+/** The JSON inside a rendered sidecar body. */
+const sidecarJson = (body: string | null): unknown =>
+  JSON.parse((/```json\n([\s\S]*)\n```/.exec(body ?? '') as RegExpExecArray)[1]);
+
+describe('write-verdict --payload-encoding base64 — the verdict Scribe copies ASCII, the verb decodes it', () => {
+  const encode = driverBase64Utf8();
+
+  it('the DRIVER encoder agrees with an independent reference (Buffer) on the hard verdict', () => {
+    const json = JSON.stringify(HARD_VERDICT);
+    expect(encode(json)).toBe(Buffer.from(json, 'utf8').toString('base64'));
+    // Every padding remainder, and the empty string.
+    for (const s of ['', 'a', 'ab', 'abc', 'abcd', '→', '🚀']) {
+      expect(encode(s), s).toBe(Buffer.from(s, 'utf8').toString('base64'));
+    }
+  });
+
+  it('ROUND TRIP — driver encode → decode → digest match → sidecar equal to the canonical payload', () => {
+    const json = JSON.stringify(HARD_VERDICT);
+    const r = runWriteRaw(encode(json), ['--payload-encoding', 'base64', '--expect-digest', canonicalDigest(HARD_VERDICT)]);
+    expect(r.err).toBe('');
+    expect(r.code).toBe(0);
+    expect(r.written).toEqual(['FOR-6-1.md']);
+    expect(sidecarJson(r.body)).toEqual(HARD_VERDICT);
+    // Byte-for-byte what the JSON path renders for the same payload.
+    expect(r.body).toBe(renderSidecarBody('ReviewerVerdict', 'FOR-6', 1, HARD_VERDICT));
+  });
+
+  it('whitespace and line breaks inside the token are tolerated', () => {
+    const wrapped = encode(JSON.stringify(HARD_VERDICT)).replace(/(.{40})/g, '$1\r\n  ') + '\n\n';
+    const r = runWriteRaw(wrapped, ['--payload-encoding', 'base64', '--expect-digest', canonicalDigest(HARD_VERDICT)]);
+    expect(r.code).toBe(0);
+    expect(sidecarJson(r.body)).toEqual(HARD_VERDICT);
+  });
+
+  it('a token that decodes to a DIFFERENT verdict still misses the digest (exit 1, nothing written)', () => {
+    const other = { ...HARD_VERDICT, workerReportDigest: 'reworded' };
+    const r = runWriteRaw(encode(JSON.stringify(other)), [
+      '--payload-encoding', 'base64', '--expect-digest', canonicalDigest(HARD_VERDICT),
+    ]);
+    expect(r.code).toBe(1);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('payload digest mismatch');
+  });
+
+  it('INVALID base64 → exit 2, nothing written, and the message says base64 failed', () => {
+    const token = encode(JSON.stringify(HARD_VERDICT));
+    for (const bad of [`${token.slice(0, 20)}!${token.slice(21)}`, token.slice(0, -1), '====', '   \n']) {
+      const r = runWriteRaw(bad, ['--payload-encoding', 'base64']);
+      expect(r.code, bad).toBe(2);
+      expect(r.written, bad).toEqual([]);
+      expect(r.out, bad).toBe('');
+      expect(r.err, bad).toContain('invalid base64');
+      expect(r.err, bad).not.toContain('invalid JSON');
+      expect(r.err, bad).toContain('nothing written');
+    }
+  });
+
+  it('base64 whose bytes are not UTF-8 → exit 2, named as a base64 decode failure', () => {
+    const r = runWriteRaw(Buffer.from([0xff, 0xfe, 0x7b]).toString('base64'), ['--payload-encoding', 'base64']);
+    expect(r.code).toBe(2);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('invalid base64');
+    expect(r.err).toContain('not UTF-8');
+  });
+
+  it('VALID base64 but INVALID JSON after decoding → exit 2, nothing written, and the message says JSON failed', () => {
+    const r = runWriteRaw(encode('{"verdict": "approve", → not json'), ['--payload-encoding', 'base64']);
+    expect(r.code).toBe(2);
+    expect(r.written).toEqual([]);
+    expect(r.out).toBe('');
+    expect(r.err).toContain('valid base64, but invalid JSON after decoding');
+    expect(r.err).toContain('nothing written');
+  });
+
+  it('an unknown encoding value, or the flag with no value, is a usage error — nothing written', () => {
+    for (const extra of [['--payload-encoding', 'hex'], ['--payload-encoding']]) {
+      const r = runWriteRaw(JSON.stringify(writtenVerdict), extra);
+      expect(r.code, extra.join(' ')).toBe(2);
+      expect(r.written).toEqual([]);
+    }
+    const hex = runWriteRaw(JSON.stringify(writtenVerdict), ['--payload-encoding', 'hex']);
+    expect(hex.err).toContain('--payload-encoding takes one of json|base64, got "hex"');
+  });
+
+  it('--payload-encoding json is the explicit default — a plain JSON file is written exactly as without the flag', () => {
+    const r = runWriteRaw(JSON.stringify(HARD_VERDICT), ['--payload-encoding', 'json']);
+    expect(r.code).toBe(0);
+    expect(r.body).toBe(renderSidecarBody('ReviewerVerdict', 'FOR-6', 1, HARD_VERDICT));
+  });
+
+  it('WITHOUT the flag a base64 file is read as JSON, as before — refused as unparseable, never decoded', () => {
+    const r = runWriteRaw(encode(JSON.stringify(writtenVerdict)), []);
+    expect(r.code).toBe(2);
+    expect(r.written).toEqual([]);
+    expect(r.err).toContain('cannot read/parse');
+  });
+
+  it('write-report does not accept the flag — the report Scribe is unchanged', () => {
+    const dir = tmp();
+    const f = join(dir, 'p.json');
+    writeFileSync(f, JSON.stringify(writtenReport));
+    const io = captureBoth();
+    const code = runWriteReport([f, '--dir', join(dir, 'reports'), '--id', 'FOR-6', '--iter', '1', '--payload-encoding', 'json']);
+    io.restore();
+    rmSync(dir, { recursive: true, force: true });
+    expect(code).toBe(2);
+  });
+});
