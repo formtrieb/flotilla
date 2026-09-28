@@ -1169,7 +1169,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_278_000; // RAISED by issue #1051 — see below (this is the first raise since issue #998; the docblock above stops at #998's own reasoning).
+const LOADED_CORPUS_CEILING_BYTES = 1_279_000; // RAISED by issue #1059 — see below (the docblock above stops at #998's own reasoning).
 // NOT raised or lowered by issue #817 (wave-setup's second residual-form diet): that row's own
 // edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
 // up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
@@ -1245,6 +1245,17 @@ const LOADED_CORPUS_CEILING_BYTES = 1_278_000; // RAISED by issue #1051 — see 
 // later ratchet row to lower. Shared standing load untouched (162,892 B — this row touches no
 // `wave-shared/` file).
 // NOT raised by issue #1056 (the `gitAutomation` reading regraded to ADR-0020's 2026-09-27 "No action" alignment): wave-setup's SKILL.md (−127 B) and setup-mechanics.md (+469 B) add 342 B net, re-measured at 1,277,691 B over the same 57 files (next full KB 1,278,000 = this value) — 309 B of headroom left; shared standing load untouched (162,892 B).
+// RAISED by issue #1059 (wave-setup's sandbox precondition states the measured carrier —
+// ADR-0049 amendment 2026-09-27, issue #1052 — instead of presenting it as an open
+// assumption: a tracked `sandbox` block reaches a dispatched worktree agent through the
+// *dispatching session's own checkout*, merged with the operator's global settings, so the
+// block must sit on the branch the Coordinator runs from and a row-branch-only block grants
+// nothing; a headless runner and `network.allowedDomains` stay named as unmeasured): the
+// touched files — wave-setup's SKILL.md (+507 B), setup-mechanics.md (+219 B) and
+// throwaway-consumer.md (+37 B) — add 763 B, re-measured at 1,278,429 B over the same 57
+// files — past the previous 1,278,000 B ceiling, so it moves to that sum rounded UP to the
+// next full KB (1 KB = 1000 B): 1,279,000 B. 571 B of headroom left. Shared standing load
+// untouched (162,892 B — this row touches no `wave-shared/` file).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */
