@@ -157,6 +157,7 @@ import { loadWaveConfig, type WaveConfig } from './wave-config';
 import type { PlanTableRow } from './wave-md-rw';
 import {
   defineVerb,
+  hasFlag,
   helpRequested,
   printVerbHelp,
   refuseUndeclared,
@@ -350,8 +351,14 @@ export function resolveTitle(input: {
   existing: OpenPrRef | null;
   rowTitle: string;
   id: string;
+  /**
+   * The title already read from `--title-file` (issue #1065) — the FILE form of
+   * the `flag` rung, so it takes that rung's place and reports `flag`. Read by
+   * the caller (usage-first, before any host call); `args` is not re-parsed for it.
+   */
+  titleFromFile?: string;
 }): ResolvedTitle {
-  const flagged = flag(input.args, '--title');
+  const flagged = input.titleFromFile ?? flag(input.args, '--title');
   if (flagged !== undefined) return { title: flagged, titleSource: 'flag' };
 
   const live = input.existing?.title;
@@ -445,6 +452,7 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
     { canonical: '--anchor', value: 'one', valueType: 'sha', required: true },
     { canonical: '--config', value: 'one', valueType: 'path', placeholder: '<cfg>' },
     { canonical: '--title', value: 'one', valueType: 'text' },
+    { canonical: '--title-file', value: 'one', valueType: 'path' },
     { canonical: '--repo-root', value: 'one', valueType: 'dir' },
     { canonical: '--remote', value: 'one', valueType: 'url' },
     { canonical: '--base', value: 'one', valueType: 'branch' },
@@ -454,12 +462,17 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
   ],
   positionals: { kind: 'fixed', count: 0 },
   output: 'json',
+  // Issue #1065: the title's file form, as on `host-pr create` — either alone,
+  // or neither (a reuse then preserves the live title).
+  groups: [{ kind: 'at-most-one', branches: [['--title'], ['--title-file']] }],
   notes: [
     '  --title renames the PR. Without it, a REUSE preserves the live PR title',
     '  byte-identically (the Worker opened it and named its own change), exactly as',
     '  the body preserves the live PR body; a CREATE falls back to the spine row',
     '  title with bare tracker ids stripped. The result reports which of the three',
     '  it used as `titleSource` (flag | live-pr | row).',
+    '  --title-file <path> is --title read from a file (one trailing newline trimmed;',
+    '  empty refused; never together with --title) — for a title quoting a git command.',
     "  --ruling is the Operator's stated reason for a Reviewer-only round ABOVE the",
     '  re-dispatch cap, and the only thing that admits an --iter above it.',
   ],
@@ -505,6 +518,33 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
 function usage(message: string): number {
   process.stderr.write([`error: ${message}`, ...ROUTE_TUPLE_CONTRACT.usage, ''].join('\n'));
   return 2;
+}
+
+/**
+ * Read `--title-file <path>` (issue #1065): the content with ONE trailing
+ * newline (`\n` or `\r\n`) trimmed; an absent path, an unreadable path or an
+ * empty title is a usage message instead.
+ *
+ * The module-local twin of `host-pr-cli`'s own reader — same rule, same
+ * messages. Sharing one would need a new engine export (a barrel/allowlist
+ * decision outside the declaring row's Files globs), so both specs pin the same
+ * cases instead and a drift between the copies fails one of them.
+ */
+function readTitleFile(path: string | undefined): { ok: true; title: string } | { ok: false; message: string } {
+  if (path === undefined || path.length === 0) {
+    return { ok: false, message: '--title-file <path> needs a path (the file whose content becomes the PR title)' };
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (err) {
+    return { ok: false, message: `could not read --title-file "${path}": ${(err as Error).message}` };
+  }
+  const title = raw.replace(/\r?\n$/, '');
+  if (title.length === 0) {
+    return { ok: false, message: `--title-file "${path}" is empty — a PR needs a title` };
+  }
+  return { ok: true, title };
 }
 
 function readJsonOrNull(path: string): unknown {
@@ -930,6 +970,18 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
   const verdictPath = flag(args, ROUTE_TUPLE_CONTRACT, 'verdict-file');
   const anchor = flag(args, '--anchor');
 
+  // `--title-file` (issue #1065) is `--title` read from a file, decided here —
+  // usage-first, before any config load or host call. Never both.
+  let titleFromFile: string | undefined;
+  if (hasFlag(ROUTE_TUPLE_CONTRACT, args, 'title-file')) {
+    if (hasFlag(ROUTE_TUPLE_CONTRACT, args, 'title')) {
+      return usage('route-tuple: pass at most ONE of --title <title> and --title-file <path> — both were given');
+    }
+    const read = readTitleFile(flag(args, ROUTE_TUPLE_CONTRACT, 'title-file'));
+    if (!read.ok) return usage(`route-tuple: ${read.message}`);
+    titleFromFile = read.title;
+  }
+
   if (!spinePath) return usage('route-tuple requires --spine <spine>');
   if (!id) return usage('route-tuple requires --id <id>');
   if (iterRaw === undefined) return usage('route-tuple requires --iter <n>');
@@ -1128,6 +1180,7 @@ export async function runRouteTuple(args: string[], deps: RouteTupleDeps = {}): 
       verdictIter: sidecars.verdictIter,
       report,
       ruled,
+      ...(titleFromFile === undefined ? {} : { titleFromFile }),
     });
   } catch (err) {
     process.stderr.write(
@@ -1262,9 +1315,12 @@ async function finishApproved(input: {
   report: WorkerReport;
   /** Present iff this landing came through an Operator-ruled above-cap round. */
   ruled?: RuledRound;
+  /** The `--title-file` content, already read and validated by the caller (issue #1065). */
+  titleFromFile?: string;
 }): Promise<number> {
   const { steps, push, args, deps, config, spineStore, id, iter, row, anchor, verdict, report, ruled } =
     input;
+  const { titleFromFile } = input;
 
   const branch = row.branch;
   if (!branch) {
@@ -1315,7 +1371,13 @@ async function finishApproved(input: {
 
   const closePhrase = closePhraseFor(config.store.kind, id);
   const body = composePrBody({ summary, verdictSection, closePhrase });
-  const { title, titleSource } = resolveTitle({ args, existing, rowTitle: row.title, id });
+  const { title, titleSource } = resolveTitle({
+    args,
+    existing,
+    rowTitle: row.title,
+    id,
+    ...(titleFromFile === undefined ? {} : { titleFromFile }),
+  });
 
   const prResult = await createOrReusePr(
     info.host,

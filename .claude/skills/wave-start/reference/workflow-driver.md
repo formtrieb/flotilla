@@ -149,6 +149,8 @@ Full derivation — the false-success shape this contract forecloses, why the te
 
 **One property the file must keep.** The close-phrase guard is line-anchored, so the store-kind close phrase (wave-shared Convention 4) has to own its own line *inside the file*. `--body-file` reads the bytes verbatim — blank lines, indentation and any trailing newline preserved, nothing trimmed — so the line the Worker wrote is the line the guard reads. A file body and the same bytes passed inline are indistinguishable downstream: same refusal, same reuse rewrite, same printed JSON.
 
+**The title has a file form too: `--title-file <path>`** (exactly one of it and `--title`; one trailing newline trimmed; empty exits 2; `route-tuple` takes it as well). The brief's PR-open step tells the Worker to use it when the title quotes a git command — the isolation guard has refused git text inside a quoted `--title` value (wave-shared Convention 13, Catalog entry 8).
+
 ## Composing the driver — one verb, no transcription
 
 ```bash

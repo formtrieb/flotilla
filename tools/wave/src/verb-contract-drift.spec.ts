@@ -549,7 +549,10 @@ describe('verb-contract drift — every rendered alternation maps to a declarati
     // Named, because these are the losses that were MEASURED — a structural
     // check that happened to hold on an empty set would say nothing about them.
     const shapes: Record<string, string> = {
-      'host-pr create': '(--body <body> | --body-file <path>)',
+      'host-pr create': '(--title <title> | --title-file <path>) (--body <body> | --body-file <path>)',
+      // Issue #1065: route-tuple's title is optional (a reuse preserves the
+      // live one), so its file form renders as an at-most-one alternation.
+      'route-tuple': '[--title <text> | --title-file <path>]',
       'spine add-disclosure': '(<row-id> --iter <n> | --wave-scoped)',
     };
     for (const [verb, shape] of Object.entries(shapes)) {

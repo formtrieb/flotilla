@@ -6907,6 +6907,32 @@ describe('host-pr subcommand routing', () => {
     const purpose = stderrBuf.split('\n').find((l) => /^ {2}host-pr {2}\S/.test(l))!;
     expect(purpose).toBeDefined();
     expect(purpose).toContain('--body-file');
+    // Issue #1065: the title's file form is named beside the body's.
+    expect(purpose).toContain('--title-file');
+  });
+
+  it('"host-pr create --title-file" reaches the runner through the async wire — both title routes at once is the runner\'s own exit-2', async () => {
+    const code = await mainAsync([
+      'host-pr', 'create', '--branch', 'b', '--title', 'T',
+      '--title-file', 'anything.txt', '--body', 'x',
+      '--remote', 'git@github.com:o/r.git',
+    ]);
+    expect(code).toBe(2);
+    expect(stderrBuf).toContain('--title-file <path>');
+    expect(stderrBuf).toMatch(/both were given/);
+  });
+
+  it('the top-level usage names the create title routes too (issue #1065)', async () => {
+    // The roster lists each flag as an independent optional (relationships
+    // off, by design); the alternation lives on the verb's own `--help`.
+    main([]);
+    const line = stderrBuf.split('\n').find((l) => l.includes('host-pr create --branch'))!;
+    expect(line).toBeDefined();
+    expect(line).toContain('--title-file <path>');
+
+    stdoutBuf = '';
+    expect(await mainAsync(['host-pr', 'create', '--help'])).toBe(0);
+    expect(stdoutBuf).toContain('(--title <title> | --title-file <path>)');
   });
 });
 

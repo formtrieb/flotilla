@@ -4316,6 +4316,22 @@ describe('compose-driver — the PR-create title is rendered single-quoted, and 
     expect(brief).toMatch(/inside DOUBLE quotes the shell still expands backticks/);
   });
 
+  it('FILE FORM (issue #1065) — the PR-open step routes a git-flavoured title or body through --title-file / --body-file', async () => {
+    const brief = await workerBrief(script, 'worker:42');
+    expect(brief).toMatch(/IF THE TITLE OR THE BODY QUOTES A GIT COMMAND, PASS IT BY FILE/);
+    // The row's own deterministic title-file path, and the flag that reads it.
+    expect(brief).toContain('--title-file .flotilla/tmp/pr-title-42.txt');
+    expect(brief).toContain('.flotilla/tmp/pr-title-42.txt` with your file-writing tool');
+    // It names the refusal it routes around and the catalog entry that records it.
+    expect(brief).toMatch(/quoted argument value included/);
+    expect(brief).toMatch(/Convention 13, Catalog entry 8/);
+    // The body half: already a file, said so.
+    expect(brief).toMatch(/The body already travels by `--body-file`/);
+    // The command-substitution workaround is named WITHOUT reintroducing a
+    // double-quoted `--title` form (pinned absent by the test below).
+    expect(brief).toContain('command-substituted title (`$(cat <file>)`)');
+  });
+
   it('BODY — the rendered `--title` is single-quoted and carries the title verbatim; no double-quoted form survives', async () => {
     const brief = await workerBrief(script, 'worker:42');
     expect(brief).toContain(`--title '${TRICKY_TITLE}' \\`);

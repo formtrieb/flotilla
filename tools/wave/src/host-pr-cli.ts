@@ -63,6 +63,12 @@
  *                  own line, and everything downstream (the guard, the reuse
  *                  rewrite, the printed JSON) sees a string that is
  *                  byte-identical to the same content passed inline.
+ *                  The TITLE has the same two routes (issue #1065): exactly
+ *                  one of `--title` and `--title-file <path>`, the file read
+ *                  with ONE trailing newline trimmed ({@link readTitleFile}).
+ *                  A worktree-isolation guard refused a quoted `--title` value
+ *                  because it contained git-command text; the file form keeps
+ *                  that text off the command line.
  *   arm          → `armPullRequest` (host-pr.ts owns the arm intent). `--delete-branch`
  *                  (consumer KW-F6, threaded onto arm's own merge call-sites, #140)
  *                  deletes the head branch when the arm decision resolves to an
@@ -308,7 +314,8 @@ function fullUsageLines(): string[] {
     ]),
     '',
     '  create    Open the PR for --branch (find-before-create): an existing OPEN PR on the branch is reused',
-    '            (never duplicated) and a missing one is created. Requires --title, plus EXACTLY ONE of',
+    '            (never duplicated) and a missing one is created. Requires EXACTLY ONE of --title <title> and',
+    '            --title-file <path>, plus EXACTLY ONE of',
     '            --body <body> and --body-file <path> — both, or neither, is a usage error naming both flags.',
     '            --body-file reads the body from that file VERBATIM (blank lines, indentation and any trailing',
     '            newline preserved) and is otherwise indistinguishable from passing the same bytes inline.',
@@ -377,6 +384,10 @@ function fullUsageLines(): string[] {
     '    phrase. Deliberate overwrites only — the terminator never needs it (a composed render carries one).',
     '  --body-file <path> (create only) is the alternative to --body: the file\'s bytes become the PR body,',
     '    unchanged. The close phrase must still own its own line INSIDE the file.',
+    '  --title-file <path> (create only) is the alternative to --title: the file\'s content, with ONE trailing',
+    '    newline trimmed, becomes the PR title; both, neither, or an empty title is a usage error. Reach for it',
+    '    (and --body-file) whenever the text quotes a git command — an agent harness\'s worktree-isolation guard',
+    '    has refused git-command text even inside a quoted --title value.',
     '  Every verb resolves its host credential through the engine credential seam:',
     '    <VAR>_CMD (a lookup command, run via the shell, 60s budget) wins over the ambient <VAR>.',
     '    A configured command that fails is a loud typed error naming the command — never its output,',
@@ -477,7 +488,8 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     verb: 'host-pr create',
     flags: [
       { canonical: '--branch', value: 'one', valueType: 'branch', required: true },
-      { canonical: '--title', value: 'one', valueType: 'text', required: true, placeholder: '<title>' },
+      { canonical: '--title', value: 'one', valueType: 'text', placeholder: '<title>' },
+      { canonical: '--title-file', value: 'one', valueType: 'path' },
       { canonical: '--body', value: 'one', valueType: 'text', placeholder: '<body>' },
       { canonical: '--body-file', value: 'one', valueType: 'path' },
       { canonical: '--base', value: 'one', valueType: 'branch' },
@@ -490,7 +502,11 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
     // state: the body comes from EXACTLY ONE of the two, and a call with both
     // or neither is a usage error naming both flags. Declared, it renders as
     // the alternation it is instead of as two independent optionals.
-    groups: [{ kind: 'exactly-one', branches: [['--body'], ['--body-file']] }],
+    // The title has the same two routes (issue #1065), declared the same way.
+    groups: [
+      { kind: 'exactly-one', branches: [['--title'], ['--title-file']] },
+      { kind: 'exactly-one', branches: [['--body'], ['--body-file']] },
+    ],
     notes: [
       '  Opens the PR for --branch (find-before-create): an existing OPEN PR is REUSED — and its title AND body',
       '  are RE-WRITTEN to the values you pass (last-writer-wins) — so this is NOT a read-only probe; use `status`',
@@ -500,6 +516,9 @@ export const HOST_PR_CONTRACTS: Readonly<Record<Verb, VerbContract>> = {
       '  file whenever the body runs to more than one paragraph — a worktree-isolated caller\'s multi-paragraph',
       '  --body has been refused in the field by an agent harness\'s isolation guard (not by every such guard), and',
       '  a long quoted argument is a quoting hazard everywhere. The close phrase must own its own line in the file.',
+      '  The title likewise comes from EXACTLY ONE of --title and --title-file (one trailing newline trimmed; an',
+      '  empty title is refused). Use the file whenever the title or body quotes a git command: an isolation guard',
+      '  refuses git-command text even inside a quoted argument value.',
     ],
     outputNote: 'a single JSON object on stdout',
     json: {
@@ -649,6 +668,7 @@ const HOST_PR_ANY_CONTRACT: VerbContract = {
     { canonical: '--title', value: 'one', valueType: 'text' },
     { canonical: '--body', value: 'one', valueType: 'text' },
     { canonical: '--body-file', value: 'one', valueType: 'path' },
+    { canonical: '--title-file', value: 'one', valueType: 'path' },
     { canonical: '--base', value: 'one', valueType: 'branch' },
     { canonical: '--allow-close-phrase-loss', value: 'none', valueType: 'none' },
     { canonical: '--method', value: 'one', valueType: 'enum' },
@@ -676,6 +696,53 @@ function usage(message: string, verb?: Verb): number {
     [`error: ${message}`, ...(contract ?? fullUsageLines()), ''].join('\n'),
   );
   return 2;
+}
+
+/** {@link readTitleFile}'s answer: the title, or the usage message that refuses it. */
+type TitleFileRead = { ok: true; title: string } | { ok: false; message: string };
+
+/**
+ * Read a PR title from `--title-file <path>` (issue #1065).
+ *
+ * **Module-local, with a twin in `route-tuple.ts`.** `route-tuple` takes the
+ * same flag with the same semantics; exporting this one helper would need a
+ * barrel/allowlist decision outside the declaring row's Files globs, so each
+ * verb carries its own ten-line copy and BOTH specs pin the same four cases
+ * (one `\n` trimmed, one `\r\n` trimmed, only one trimmed, empty refused) —
+ * a drift between the copies fails one of them.
+ *
+ * **Why the file form exists.** An agent harness's worktree-isolation guard
+ * refused a Worker's `host-pr create` because its quoted `--title` VALUE
+ * contained git-command text (`git reset --hard`, the row's own subject) —
+ * "so what it runs cannot be shown not to be git" — and `--title "$(cat f)"`
+ * was refused in turn as a value computed at runtime. flotilla cannot change
+ * the guard's matching; a file keeps the text off the command line entirely.
+ *
+ * **One trailing newline is trimmed, and only one** (`\n` or `\r\n`): a file
+ * written by any editor ends in a newline that is not part of the title, while
+ * anything beyond it is content the caller wrote and is left alone. Unlike
+ * `--body-file`, which is verbatim because the close-phrase guard is
+ * line-anchored, a title is one line and has no such guard to protect.
+ *
+ * An absent path, an unreadable path, and an empty title (after the trim) are
+ * each refused with a message naming the flag and — where there is one — the
+ * path, because the path is what the caller can fix. Pure apart from the read.
+ */
+function readTitleFile(path: string | undefined): TitleFileRead {
+  if (path === undefined || path.length === 0) {
+    return { ok: false, message: '--title-file <path> needs a path (the file whose content becomes the PR title)' };
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (err) {
+    return { ok: false, message: `could not read --title-file "${path}": ${(err as Error).message}` };
+  }
+  const title = raw.replace(/\r?\n$/, '');
+  if (title.length === 0) {
+    return { ok: false, message: `--title-file "${path}" is empty — a PR needs a title` };
+  }
+  return { ok: true, title };
 }
 
 /**
@@ -773,6 +840,16 @@ export async function runHostPr(
     );
   }
 
+  // `--title-file` is create's file form of `--title` — refused on every other
+  // verb for the same reason `--body-file` is: none of them writes a PR title.
+  const titleFileGiven = hasFlag(HOST_PR_ANY_CONTRACT, args, 'title-file');
+  if (titleFileGiven && verb !== 'create') {
+    return usage(
+      `--title-file is only supported by 'create' (it supplies the PR title); '${verb}' writes no PR title`,
+      verb,
+    );
+  }
+
   // `--delete-branch` is a branch-hygiene flag (consumer KW-F6): on a
   // successful `merge` it deletes the PR's remote head branch through the host
   // API. `arm` accepts it too (issue #140, wiring the engine's own
@@ -836,9 +913,31 @@ export async function runHostPr(
   let body: string | undefined;
   let base = 'main';
   if (verb === 'create') {
-    title = flag(args, contract, 'title');
-    if (title === undefined || title.length === 0) {
-      return usage('--title <title> is required for create', verb);
+    // The title, like the body, arrives by exactly ONE of two routes: inline
+    // (`--title`) or from a file (`--title-file`). Presence is decided on the
+    // flag TOKEN, as for the body, and both refusals name both flags.
+    const titleInlineGiven = hasFlag(contract, args, 'title');
+    if (titleInlineGiven && titleFileGiven) {
+      return usage(
+        'pass exactly ONE of --title <title> and --title-file <path> for create — both were given',
+        verb,
+      );
+    }
+    if (!titleInlineGiven && !titleFileGiven) {
+      return usage(
+        '--title <title> is required for create — or pass --title-file <path> instead (exactly ONE of the two)',
+        verb,
+      );
+    }
+    if (titleFileGiven) {
+      const read = readTitleFile(flag(args, contract, 'title-file'));
+      if (!read.ok) return usage(read.message, verb);
+      title = read.title;
+    } else {
+      title = flag(args, contract, 'title');
+      if (title === undefined || title.length === 0) {
+        return usage('--title <title> is required for create', verb);
+      }
     }
 
     // The body arrives by exactly ONE of the two routes. Presence is decided on

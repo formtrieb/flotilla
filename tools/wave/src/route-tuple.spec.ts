@@ -436,6 +436,18 @@ describe('route-tuple', () => {
         resolveTitle({ args: [], existing: null, rowTitle: ROW_TITLE, id: ID }).titleSource,
       ).toBe('row');
     });
+
+    it('a title read from --title-file occupies the flag rung — it outranks the live title (issue #1065)', () => {
+      expect(
+        resolveTitle({
+          args: [],
+          existing: { url: EXISTING_PR, title: 'live' },
+          rowTitle: ROW_TITLE,
+          id: ID,
+          titleFromFile: 'from the file',
+        }),
+      ).toEqual({ title: 'from the file', titleSource: 'flag' });
+    });
   });
 
   // ── approve: the full terminator ───────────────────────────────────────────
@@ -648,6 +660,82 @@ describe('route-tuple', () => {
       expect(patched.title).toBe(override);
       expect(result()).toMatchObject({ title: override, titleSource: 'flag' });
       expect(step('pr-create-or-reuse')).toMatchObject({ titleSource: 'flag' });
+    });
+
+    // ── --title-file (issue #1065): the flag rung, read from a file ─────────
+    //
+    // The same semantics `host-pr create --title-file` has — the two readers are
+    // module-local twins, so this block pins the same cases host-pr-cli.spec.ts
+    // pins, and a drift between the copies fails one side.
+
+    /** Run a REUSE with `extra` flags; return the exit code and the PATCHed title. */
+    async function reuseWith(extra: string[]): Promise<{ code: number; patchedTitle?: string; methods: string[] }> {
+      await seed();
+      landTuple(1, report(), verdict());
+      let patchedTitle: string | undefined;
+      const { http, requests } = fakeHttp({
+        get: () => ({
+          status: 200,
+          json: [{ html_url: EXISTING_PR, number: 7, title: 'Live title', body: `Live.\n\nCloses #${id}` }],
+        }),
+        patch: (_url, body) => {
+          patchedTitle = (JSON.parse(body ?? '{}') as Record<string, string>).title;
+          return { status: 200, json: {} };
+        },
+      });
+      const code = await runRouteTuple(
+        argv(1, extra),
+        deps({ http, landingHost: fakeLanding({ state: 'open', url: EXISTING_PR, number: 7 }) }),
+      );
+      return {
+        code,
+        ...(patchedTitle === undefined ? {} : { patchedTitle }),
+        methods: requests.map((r) => r.method),
+      };
+    }
+
+    function titleFile(content: string, name = 'pr-title.txt'): string {
+      const p = join(repoRoot, name);
+      writeFileSync(p, content, 'utf8');
+      return p;
+    }
+
+    it('--title-file takes the flag rung: the PR title equals the file content, trailing newline trimmed', async () => {
+      const gitFlavoured = 'Fall back to `git reset --mixed` when `git reset --hard` is refused';
+      const r = await reuseWith(['--title-file', titleFile(`${gitFlavoured}\n`)]);
+      expect(r.code).toBe(0);
+      expect(r.patchedTitle).toBe(gitFlavoured);
+      expect(result()).toMatchObject({ title: gitFlavoured, titleSource: 'flag' });
+    });
+
+    it('--title-file trims ONE trailing newline (\\n or \\r\\n), and only one', async () => {
+      expect((await reuseWith(['--title-file', titleFile('T\r\n', 'a.txt')])).patchedTitle).toBe('T');
+      stdout = '';
+      expect((await reuseWith(['--title-file', titleFile('T\n\n', 'b.txt')])).patchedTitle).toBe('T\n');
+    });
+
+    it('BOTH --title and --title-file → exit 2 naming both flags, before any request', async () => {
+      const r = await reuseWith(['--title', 'T', '--title-file', titleFile('T\n')]);
+      expect(r.code).toBe(2);
+      expect(stderr).toMatch(/at most ONE of --title <title> and --title-file <path>/);
+      expect(r.methods).toEqual([]);
+    });
+
+    it('an EMPTY --title-file → exit 2 naming the path, before any request', async () => {
+      const empty = titleFile('\n', 'empty.txt');
+      const r = await reuseWith(['--title-file', empty]);
+      expect(r.code).toBe(2);
+      expect(stderr).toContain(empty);
+      expect(stderr).toMatch(/is empty/);
+      expect(r.methods).toEqual([]);
+    });
+
+    it('an unreadable --title-file → exit 2 naming the path', async () => {
+      const missing = join(repoRoot, 'no-such-title.txt');
+      const r = await reuseWith(['--title-file', missing]);
+      expect(r.code).toBe(2);
+      expect(stderr).toMatch(/could not read --title-file/);
+      expect(r.methods).toEqual([]);
     });
 
     it('an EMPTY live title is not a title worth preserving — the row stands in, never ""', async () => {

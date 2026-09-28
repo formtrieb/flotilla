@@ -1050,3 +1050,49 @@ a successful identical retry is what would earn the clause a bounded retry (the 
 measurement's own observed maximum plus one, capped at 5) in place of the immediate STOP.
 
 **Occurrence:** issue #994's own Worker dispatch, 2026-09-25.
+
+### Entry 8 — git-command text inside an argument VALUE (issue #1065)
+
+**The field occurrence.** A consumer's wave (`2026-09-27-server-followups`, row DES-205, iteration 1;
+installed form, plugin and engine 2.10.0, Linear store, Claude Code VS Code extension, the Worker a
+worktree-isolated subagent of the Workflow driver). The row's subject WAS a git command, so the
+title the brief prescribed necessarily contained it. The Worker's report, verbatim:
+
+> `flotilla-engine host-pr create` with the prescribed literal --title (which necessarily contains
+> the text `git reset --hard`, since that IS this issue's subject) was refused twice, verbatim, with
+> 'so what it runs cannot be shown not to be git.' A second attempt using `--title "$(cat titlefile)"`
+> was also refused, this time as 'a value computed at runtime ... too complex to verify,' with the
+> guard's own suggested remedy 'Split it into plain, separate commands.'
+
+The Worker's working form was a small wrapper script that read the title from a sibling file and
+called `host-pr create` itself, so the git-flavoured text never reached the Bash tool's own command
+line; a `host-pr status` re-query confirmed the live title and body byte-identical to the intent.
+None of the catalogued shapes applied — no `&&` fusion, no `case`/`if`, no bare `$VAR`, no absolute
+runner path.
+
+**The probe record, from one worktree-isolated dispatch (issue #1065's own Worker, 2026-09-28).**
+
+| shape | outcome |
+|---|---|
+| `printf '%s\n' 'Fix: fall back when git reset --hard is refused'` | ran clean |
+| control: the same `printf` with the git words removed | ran clean |
+| `host-pr create --branch probe/none --title 'Fix: fall back when git reset --hard is refused' --body-file does-not-exist.md --remote <a gitlab URL>` (no adapter, so nothing could reach a network) | ran — the verb's own exit 2 for the unreadable body file; the guard did not fire |
+| a `python3 -` heredoc whose program text named git (an identifier `gitRemoteUrl`, and prose about git commands) | **refused**: "…this command feeds python text naming git in a plain command, which cannot be shown to stay inside the worktree. Refusing to run it — a worktree-isolated agent's git operations must target its own worktree." |
+
+So the hypothesis the report filed (the guard matches git text anywhere, including inside a quoted
+value) is neither confirmed nor refuted on demand: the exact field shape ran clean here, while a
+different shape was refused in wording that names git text in the input rather than any git command
+it runs. The refused heredoc also carried braces near its head, so Entry 2's trigger may share the
+cause — the probe does not separate them. This is the same position `--body` was in (see
+`wave-start/reference/workflow-driver.md` § `--body-file`): a refusal reported verbatim in the field
+and not reproducible on demand, which is exactly the case in which a rule about phrasing buys nothing
+and a structural remedy is worth having.
+
+**The remedy shipped with this entry.** `host-pr create` gained `--title-file <path>` (exactly one of
+`--title` / `--title-file`, mirroring `--body` / `--body-file`; the file's content with ONE trailing
+newline trimmed is the title; both, neither, an unreadable path or an empty title exits 2), and
+`route-tuple` takes the same flag (at most one of the pair, since its title is optional). The Worker
+brief's PR-open step now says to write a git-flavoured title with the file-writing tool and pass it by
+`--title-file`; the body already travels by `--body-file`. Rewording a title to avoid git text was
+ruled out of scope: the title is the one-line form of the change's claim, and a row whose subject is
+a git command has no honest title without it.
