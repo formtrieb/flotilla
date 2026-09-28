@@ -16,7 +16,7 @@
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
  *   npx tsx tools/wave/src/cli.ts credential-probe (--all | --var <VAR> [--var <VAR> ...])
  *   npx tsx tools/wave/src/cli.ts compose-driver --spine <spine> --out <path> --anchor <sha> [...]
- *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> [--ruling <text>] [...]
+ *   npx tsx tools/wave/src/cli.ts route-tuple --spine <spine> --id <id> --iter <n> --report-file <path> --verdict-file <path> --anchor <sha> [--ruling <text>] [--approve <text>] [...]
  *   npx tsx tools/wave/src/cli.ts close-row --spine <spine> --id <id> [--pr-url <url>] [...]
  *   npx tsx tools/wave/src/cli.ts route-verdict --verdict <v> --iter <n> --risk <r> --state <s> [--ruling <text>]
  *
@@ -441,6 +441,16 @@
  * dispatch path runs. The result names the ruled cell and quotes the ruling, so
  * the round is auditable from the output. Cap accounting is untouched.
  *
+ * `--approve "<the Operator's reason>"` is the continuation of the
+ * `public-api-approval-required` STOP (ADR-0047's narrow first slice): on a row
+ * that routes onto exactly that STOP it fires the state machine's
+ * `human-approve` event and runs the approve path end to end — an
+ * `## Operator approval` section quoting the reason in the PR body, the spine
+ * row to `pr-created` with its PR url and the approval recorded, the
+ * needs-attention flag cleared, the rung to `in-review`. On any other row, or
+ * with a reason that states nothing, it is refused and writes nothing; under it
+ * the sidecar step only reads. Its result carries an `approved` object.
+ *
  * ASYNC (host I/O plus a resolved store), so `mainAsync` intercepts it before
  * the sync `main()` router, like `host-pr` / `issue-store` / `compose-driver`.
  * Exit codes:
@@ -747,7 +757,7 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   'compose-driver':
     'Compose the Workflow dispatch driver from the spine, the config and the store, and write it to --out.',
   'route-tuple':
-    'Perform the whole post-return sequence for one returned tuple — sidecar check, routing, verdict render, create-or-reuse, status re-query, spine writes, rung transition — and print one result.',
+    'Perform the whole post-return sequence for one returned tuple — sidecar check, routing, verdict render, create-or-reuse, status re-query, spine writes, rung transition — and print one result; --approve <text> continues a public-api-approval-required STOP.',
   'close-row':
     "Land one merged row: upsert its PR-Log and Closed-by lines, derive the met-AC indexes from its final verdict, then close it on the tracker.",
   'route-verdict':

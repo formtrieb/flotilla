@@ -36,6 +36,15 @@
  * The richer entry point is {@link verdictToRouting}, which returns the same
  * event plus — on an Operator-RULED round only — the cell it landed in and the
  * ruling that admitted it. See §"The Operator-ruled round" below.
+ *
+ * **What this adapter never emits: `human-approve`** (ADR-0047's first slice).
+ * That event is the OPERATOR's answer to the public-API STOP this adapter routes
+ * a `public-API-change` approve onto, so no Reviewer verdict — ruled or not —
+ * maps to it. It is fired only by `route-tuple --approve "<reason>"`, and only
+ * after that verb has re-routed the row through this adapter and landed on
+ * `public-api-approval-required`; the reason is held to {@link rulingViolation}'s
+ * rule, the same one a ruling is. Keeping it out of this table is what keeps an
+ * approval from ever standing in for the Reviewer.
  */
 
 import { RISK_VALUES, type Risk } from './header-parser';

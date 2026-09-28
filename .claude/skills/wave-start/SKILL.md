@@ -209,7 +209,7 @@ A `stop` outcome (`public-api-approval-required`, `reviewer-questions-blocking`,
   --option "<option A>" --option "<option B>"
 ```
 
-- `recoverable-stop` (`reviewer-questions-blocking`, `public-api-approval-required`, `worker-stalled` warn, `re-dispatch-cap-exhausted`): the wave can resume after a human decision.
+- `recoverable-stop` (`reviewer-questions-blocking`, `public-api-approval-required`, `worker-stalled` warn, `re-dispatch-cap-exhausted`): the wave can resume after a human decision. An approved `public-api-approval-required` resumes in one call: re-run the row's `route-tuple` with `--approve "<the Operator's reason>"` — never replay the approve path by hand.
 - `terminal-failure` (`worker-failed`, `same-file-conflict` blocking): the row cannot proceed without re-planning.
 
 Do **not** auto-proceed past a STOP — these are the human gates the protocol preserves. The flag is orthogonal to the rung: a flagged row keeps its current `ClaimRung` (`read().status` gives `needs-attention` precedence in the projection, but the underlying rung is unchanged), so resume can still see where it was.

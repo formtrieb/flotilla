@@ -119,6 +119,18 @@ export const WAVE_EVENTS = [
   // is spent, so it STOPs via the existing `worker-failed` path. Cap = 1 —
   // termination stays guaranteed.
   'worker-failed-transient',
+  // ADR-0047 (the narrow first slice, Operator ruling 2026-09-28) — the
+  // Operator's approval of a `public-API-change` row the Reviewer approved.
+  // The G3 STOP (`public-api-approval-required`) is resolved from `reviewing` /
+  // `verdict-in` and changes no state, so those two are the states the STOP
+  // left the row in, and the ONLY two this event is legal from: it leads to
+  // `approved`, the very state an ordinary `reviewer-approve` reaches. From any
+  // other state it is `noop` — which the routing verbs treat as a caller bug,
+  // never a legitimate nothing. It is emitted by `route-tuple --approve`, and
+  // only after the verb has itself re-routed the row onto that STOP, so the
+  // event can never stand in for the Reviewer. The other three `human-*`
+  // events ADR-0047 names stay proposed.
+  'human-approve',
 ] as const;
 
 export type WaveEvent = (typeof WAVE_EVENTS)[number];
@@ -263,6 +275,10 @@ export function transition(
           return t('approved');
         case 'reviewer-approve-public-api':
           return stop('public-api-approval-required', 'blocking');
+        case 'human-approve':
+          // ADR-0047: the Operator approved past the public-API STOP above —
+          // the same next state the ordinary approve reaches.
+          return t('approved');
         case 'reviewer-changes-requested-1st':
           return t('re-dispatched');
         case 'reviewer-questions-blocking':
@@ -280,6 +296,8 @@ export function transition(
           return t('approved');
         case 'reviewer-approve-public-api':
           return stop('public-api-approval-required', 'blocking');
+        case 'human-approve':
+          return t('approved');
         case 'reviewer-questions-blocking':
           return stop('reviewer-questions-blocking', 'blocking');
         default:

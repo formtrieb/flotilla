@@ -393,3 +393,23 @@ describe('the ruled round never re-enters cap accounting', () => {
     });
   });
 });
+
+describe('human-approve is the Operator\'s event, never a Reviewer verdict\'s (ADR-0047)', () => {
+  it('no (verdict, iteration, risk) cell — ordinary or ruled — maps to human-approve', () => {
+    const RULING = 'Operator ruling 03:50 — re-dispatch the Reviewer only, please.';
+    for (const verdict of VERDICT_VALUES) {
+      for (const risk of RISK_VALUES) {
+        for (const iteration of [1, 2]) {
+          expect(verdictToEvent(verdict, iteration, risk)).not.toBe('human-approve');
+        }
+        expect(verdictToEvent(verdict, 3, risk, RULING)).not.toBe('human-approve');
+      }
+    }
+  });
+
+  it('it continues exactly the cell this adapter routes a public-API approve onto', () => {
+    const event = verdictToEvent('approve', 1, 'public-API-change');
+    expect(transition('reviewing', event)).toMatchObject({ reason: 'public-api-approval-required' });
+    expect(transition('reviewing', 'human-approve')).toEqual({ type: 'transition', nextState: 'approved' });
+  });
+});
