@@ -58,6 +58,15 @@ export interface ConformanceHarness {
     blockedId: string,
     blockerId: string,
   ): Promise<void> | void;
+  /**
+   * True when the store's `read()` keeps a Files entry's trailing
+   * `← annotation` as part of the entry (the tracker body codec does — GitHub,
+   * Linear). `MarkdownFsStore`'s header parser strips the annotation on read by
+   * its own contract, so it leaves this unset: the Files round-trip case then
+   * holds the annotated entry's PATH byte-identical there, and the whole entry
+   * byte-identical only on a store that declares it keeps it.
+   */
+  retainsFilesAnnotations?: boolean;
 }
 
 /**
@@ -102,6 +111,42 @@ export function runIssueStoreConformance(
         'first criterion',
         'second criterion',
       ]);
+    });
+
+    // A Files entry is a path or a glob, and a glob is exactly the text markdown
+    // reads as emphasis. The Files list is the conflict boundary, so every entry
+    // must read back BYTE-IDENTICAL to what was written — through create AND
+    // through both annotate paths — on every store, including one that
+    // normalizes the body's markdown on save (the Linear harness models that).
+    const MARKDOWN_HOSTILE_FILES = [
+      '**/__snapshots__/**',
+      'src/_components/x.ts',
+      'libs/**/*.spec.ts',
+      'src/_internal/** ← widened after review',
+    ];
+
+    it('Files entries that read as markdown emphasis round-trip byte-identical (create, annotate files, annotate filesAdd)', async () => {
+      const { h, store } = await fresh();
+      // What read() must return: every entry exactly as written — the annotated
+      // one included on a store that keeps annotations, its path exactly as
+      // written on one that strips them (see `retainsFilesAnnotations`).
+      const expected = h.retainsFilesAnnotations
+        ? MARKDOWN_HOSTILE_FILES
+        : MARKDOWN_HOSTILE_FILES.map((f) => f.replace(/\s+←.*$/, ''));
+
+      const created = await store.create(h.baseInput({ files: MARKDOWN_HOSTILE_FILES }));
+      expect((await store.read(created)).files).toEqual(expected);
+
+      const replaced = await store.create(h.baseInput({ files: ['placeholder.ts'] }));
+      await store.annotate(replaced, { files: MARKDOWN_HOSTILE_FILES });
+      expect((await store.read(replaced)).files).toEqual(expected);
+
+      const appended = await store.create(h.baseInput({ files: ['placeholder.ts'] }));
+      await store.annotate(appended, { filesAdd: MARKDOWN_HOSTILE_FILES });
+      expect((await store.read(appended)).files).toEqual(['placeholder.ts', ...expected]);
+      // and re-adding them after a (possibly normalizing) save is still the no-op
+      await store.annotate(appended, { filesAdd: MARKDOWN_HOSTILE_FILES });
+      expect((await store.read(appended)).files).toEqual(['placeholder.ts', ...expected]);
     });
 
     it('two creates yield distinct ids, both readable (id is opaque, not derived)', async () => {

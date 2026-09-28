@@ -27,7 +27,13 @@ import { GOAL_MEMBER_STATES } from '../goal-frontier';
 // the same function body. The edge is one-way and acyclic — `body-codec` imports
 // nothing from this module — and it is read at CALL time, inside
 // `classifyCreateInput`, never at module evaluation.
-import { assertAcceptanceCriteriaShape, replaceSection } from './body-codec';
+import {
+  assertAcceptanceCriteriaShape,
+  decodeFilesEntry,
+  filesListItems,
+  filesListLines,
+  replaceSection,
+} from './body-codec';
 
 export type { ClaimRung };
 
@@ -669,9 +675,15 @@ export function validateAnnotatePatch(patch: AnnotatePatch): void {
   }
 }
 
-/** A Files entry's comparison key: trimmed, with any `← annotation` tail dropped. */
+/**
+ * A Files entry's comparison key: DECODED ({@link decodeFilesEntry} — a code
+ * span stripped, a legacy bare entry's Linear escapes reversed), trimmed, with
+ * any `← annotation` tail dropped. Decoding first is what makes a legacy bare
+ * `src/\_x/\*\*` and its code-span form `` `src/_x/**` `` the SAME entry, so a
+ * `filesAdd` of one never appends a duplicate of the other.
+ */
 function filesEntryKey(entry: string): string {
-  return entry.replace(/\s+←.*$/, '').trim();
+  return decodeFilesEntry(entry).replace(/\s+←.*$/s, '').trim();
 }
 
 /**
@@ -702,21 +714,19 @@ export function filesToAppend(existing: readonly string[], add: readonly string[
 export function appendToFilesSection(body: string, add: readonly string[]): string {
   const lines = body.split('\n');
   const start = lines.findIndex((l) => /^##\s+Files\s*$/i.test(l));
-  const existing: string[] = [];
+  let existing: string[] = [];
   let lastItem = -1;
   if (start >= 0) {
-    for (let i = start + 1; i < lines.length && !/^##\s+/.test(lines[i]); i++) {
-      const m = /^[-*]\s+(.+)$/.exec(lines[i].trim());
-      if (m) {
-        existing.push(m[1].trim());
-        lastItem = i;
-      }
-    }
+    let end = start + 1;
+    while (end < lines.length && !/^##\s+/.test(lines[end])) end++;
+    const items = filesListItems(lines.slice(start + 1, end));
+    existing = items.map((i) => i.text);
+    if (items.length > 0) lastItem = start + 1 + items[items.length - 1].line;
   }
   const additions = filesToAppend(existing, add);
   if (additions.length === 0) return body;
-  if (lastItem < 0) return replaceSection(body, 'Files', additions.map((f) => `- ${f}`));
-  lines.splice(lastItem + 1, 0, ...additions.map((f) => `- ${f}`));
+  if (lastItem < 0) return replaceSection(body, 'Files', filesListLines(additions));
+  lines.splice(lastItem + 1, 0, ...filesListLines(additions));
   return lines.join('\n');
 }
 

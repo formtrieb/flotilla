@@ -32,10 +32,16 @@ function baseInput(overrides: Partial<CreateInput> = {}): CreateInput {
 // ── the SAME shared contract MarkdownFsStore + GitHubIssuesStore pass, zero suite changes ──
 runIssueStoreConformance('LinearIssuesStore', (): ConformanceHarness => ({
   async makeStore() {
-    return new LinearIssuesStore({ api: new InMemoryLinearApi() });
+    // Normalization ON: the conformance run stores descriptions the way Linear
+    // does (escapes added, `__x__` re-emphasized), so a Files entry the codec
+    // does not protect fails the round-trip case here, not only in production.
+    return new LinearIssuesStore({
+      api: new InMemoryLinearApi('EX', undefined, { normalizeMarkdown: true }),
+    });
   },
   hooks: linearConformanceHooks,
   baseInput,
+  retainsFilesAnnotations: true,
   // #654: the native-only blocked-by edge case reaches through the store to
   // its injected fake — the same test-affordance stance `linearConformanceHooks`
   // itself takes.
@@ -44,6 +50,73 @@ runIssueStoreConformance('LinearIssuesStore', (): ConformanceHarness => ({
     api.addNativeRelation(blockedId, blockerId);
   },
 }));
+
+// ── Files entries vs Linear's markdown normalization ─────────────────────────
+//
+// The DEMONSTRATION, not only the assertion: against the normalizing fake, the
+// Files section as the codec used to write it (each entry a bare list item)
+// reads back altered, and the code-span encoding the codec writes now reads
+// back byte-identical. The pre-fix shape is rebuilt here verbatim — `- <entry>`
+// per line — and written through the api directly, so this spec keeps showing
+// the defect the encoding exists to prevent.
+describe('LinearIssuesStore — Files entries survive Linear markdown normalization', () => {
+  const FILES = [
+    '**/__snapshots__/**',
+    'src/_components/x.ts',
+    'libs/**/*.spec.ts',
+    'src/_internal/** ← widened after review',
+  ];
+  let api: InMemoryLinearApi;
+  let store: LinearIssuesStore;
+  beforeEach(() => {
+    api = new InMemoryLinearApi('EX', undefined, { normalizeMarkdown: true });
+    store = new LinearIssuesStore({ api });
+  });
+
+  /** The Files section exactly as the pre-fix codec wrote it: one bare list item per entry. */
+  const preFixBody = (files: string[]) =>
+    ['## Files', '', ...files.map((f) => `- ${f}`), '', '## Blocked by', '', 'none', '',
+      '## Acceptance criteria', '', '- [ ] ac', ''].join('\n');
+
+  it('the PRE-FIX bare shape reads back altered — escapes added, `__x__` underscores lost', async () => {
+    const { identifier } = await api.createIssue({
+      title: 'pre-fix',
+      description: preFixBody(FILES),
+      labels: ['ready-for-agent', 'risk/mechanical', 'worker/background'],
+    });
+    const stored = (await api.getIssue(identifier)).description;
+    expect(stored).toContain('* src/\\_components/x.ts');
+    expect(stored).toContain('* libs/\\*\\*/\\*.spec.ts');
+
+    const files = (await store.read(identifier)).files;
+    expect(files).not.toEqual(FILES);
+    // the escapes are reversible (the legacy-read decode undoes them) …
+    expect(files.slice(1)).toEqual(FILES.slice(1));
+    // … but `__snapshots__` came back as emphasis, and nothing can recover it
+    expect(files[0]).not.toContain('__snapshots__');
+    expect(files[0]).toBe('**/**snapshots**/**');
+  });
+
+  it('the code-span encoding reads back byte-identical — create, annotate files, annotate filesAdd', async () => {
+    const created = await store.create(baseInput({ files: FILES }));
+    expect((await store.read(created)).files).toEqual(FILES);
+
+    const replaced = await store.create(baseInput());
+    await store.annotate(replaced, { files: FILES });
+    expect((await store.read(replaced)).files).toEqual(FILES);
+
+    const added = await store.create(baseInput());
+    await store.annotate(added, { filesAdd: FILES });
+    expect((await store.read(added)).files).toEqual(['src/x.ts', ...FILES]);
+  });
+
+  it("the fake's normalization is idempotent — a read-edit-write cycle does not escape twice", async () => {
+    const { identifier } = await api.createIssue({ title: 't', description: preFixBody(FILES), labels: [] });
+    const once = (await api.getIssue(identifier)).description;
+    await api.setDescription(identifier, once);
+    expect((await api.getIssue(identifier)).description).toBe(once);
+  });
+});
 
 // ── Linear-specific mapping (storage-aware: the part conformance can't see) ──
 describe('LinearIssuesStore — Linear-specific mapping (ADR-0020)', () => {
@@ -702,7 +775,7 @@ describe('LinearIssuesStore — blockedBy native WRITE half (ADR-0020 fast-follo
 
     await store.annotate(id, { filesAdd: ['src/b.ts', 'src/c.ts'] });
     const after = (await api.getIssue(id)).description;
-    expect(after).toBe(before.replace('- src/b.ts\n', '- src/b.ts\n- src/c.ts\n'));
+    expect(after).toBe(before.replace('- `src/b.ts`\n', '- `src/b.ts`\n- `src/c.ts`\n'));
 
     await store.annotate(id, { filesAdd: ['src/c.ts', 'src/a.ts'] }); // all already listed
     expect((await api.getIssue(id)).description).toBe(after);

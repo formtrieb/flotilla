@@ -97,6 +97,7 @@ import {
   assertAcceptanceCriteriaShape,
   writeBlockedBy,
   decoratedBlockedBy,
+  filesListLines,
 } from '../body-codec';
 
 const VALID_RUNGS: readonly ClaimRung[] = ['queued', 'in-flight', 'in-review'];
@@ -424,7 +425,7 @@ export class LinearIssuesStore implements IssueStore {
     // preserving unmodeled sections/lines (NOT a parseBody→serializeBody round-trip).
     let description = issue.description;
     if (patch.files !== undefined) {
-      description = replaceSection(description, 'Files', patch.files.map((f) => `- ${f}`));
+      description = replaceSection(description, 'Files', filesListLines(patch.files));
     }
     if (patch.filesAdd !== undefined) {
       description = appendToFilesSection(description, patch.filesAdd);

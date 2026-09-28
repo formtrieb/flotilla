@@ -10,7 +10,87 @@ import {
   AcceptanceCriteriaShapeError,
   writeBlockedBy,
   decoratedBlockedBy,
+  decodeFilesEntry,
+  filesListLines,
 } from './body-codec';
+
+// ── the Files ENTRY codec — code span on write, decode (and legacy unescape) on read
+describe('Files entries — written as inline code spans, read back exactly', () => {
+  const minimal = (files: string[]) =>
+    serializeBody({ files, blockedBy: 'none', acceptanceCriteria: [{ text: 'ac', checked: false }] });
+
+  it('writes each entry as a code span, the `← annotation` outside it', () => {
+    expect(filesListLines(['**/__snapshots__/**', 'src/a.ts ← only if needed'])).toEqual([
+      '- `**/__snapshots__/**`',
+      '- `src/a.ts` ← only if needed',
+    ]);
+    expect(minimal(['src/_x/**'])).toContain('## Files\n\n- `src/_x/**`\n');
+  });
+
+  it('uses a longer fence (and padding) when the entry itself carries backticks', () => {
+    expect(filesListLines(['a`b.ts', '`lead.ts', 'x``y'])).toEqual([
+      '- ``a`b.ts``',
+      '- `` `lead.ts ``',
+      '- ```x``y```',
+    ]);
+  });
+
+  it('round-trips every entry shape byte-identical through serializeBody → parseBody', () => {
+    const files = [
+      '**/__snapshots__/**',
+      'src/_components/x.ts',
+      'libs/**/*.spec.ts',
+      'src/_internal/** ← widened after review',
+      'a`b.ts',
+      '`lead.ts',
+      'x``y',
+      'plain/path.ts',
+    ];
+    expect(parseBody(minimal(files)).files).toEqual(files);
+  });
+
+  it('parses a LEGACY bare body with Linear `\\*` / `\\_` escapes to the unescaped paths', () => {
+    const legacy = [
+      '## Files',
+      '',
+      '* libs/mopla-ds/.storybook/\\*\\*',
+      '* \\*\\*/vite.config.mts',
+      '* libs/**/src/**/\\*.spec.ts',
+      '* libs/features/src/lib/\\_components/admins-card/a.stories.ts',
+      '- listbox/\\_internal/row.spec.ts ← kept',
+      '- plain/untouched.ts',
+      '',
+      '## Blocked by',
+      '',
+      'none',
+      '',
+      '## Acceptance criteria',
+      '',
+      '- [ ] ac',
+      '',
+    ].join('\n');
+    expect(parseBody(legacy).files).toEqual([
+      'libs/mopla-ds/.storybook/**',
+      '**/vite.config.mts',
+      'libs/**/src/**/*.spec.ts',
+      'libs/features/src/lib/_components/admins-card/a.stories.ts',
+      'listbox/_internal/row.spec.ts ← kept',
+      'plain/untouched.ts',
+    ]);
+  });
+
+  it('does NOT guess at a `__x__` already re-emphasized to `**x**` — it reads back as stored', () => {
+    // Nothing in `**snapshots**` says whether it began as `__snapshots__` or a
+    // genuine glob pair; the decoder leaves it alone rather than invent a path.
+    expect(decodeFilesEntry('generators/**/snapshots**/')).toBe('generators/**/snapshots**/');
+  });
+
+  it('strips exactly ONE surrounding code span (an entry that is itself a code span survives)', () => {
+    expect(decodeFilesEntry('`src/a.ts`')).toBe('src/a.ts');
+    expect(decodeFilesEntry(filesListLines(['`already`'])[0].slice(2))).toBe('`already`');
+    expect(decodeFilesEntry('`src/a.ts` ← see \\_notes')).toBe('src/a.ts ← see _notes');
+  });
+});
 
 // ── writeBlockedBy / decoratedBlockedBy (ADR-0054 — block / unblock's body half)
 describe('writeBlockedBy — the `## Blocked by` ref list, and nothing else', () => {

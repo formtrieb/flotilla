@@ -84,6 +84,107 @@ function copyGitAutomationState(rule: LinearGitAutomationState): LinearGitAutoma
   };
 }
 
+// ─── Linear's save-time markdown normalization (a MODEL, opt-in) ────────────
+//
+// Real Linear does not store a description verbatim: it parses the markdown and
+// re-serializes it. Observed live on bare `## Files` list items (engine 2.10.0):
+//
+//   written                                   stored
+//   - libs/x/.storybook/**                    * libs/x/.storybook/\*\*
+//   - **/vite.config.mts                      * \*\*/vite.config.mts
+//   - libs/**/src/**/*.spec.ts                * libs/**/src/**/\*.spec.ts
+//   - src/lib/_components/a.ts                * src/lib/\_components/a.ts
+//   - generators/**/__snapshots__/**          * generators/**/snapshots**/
+//
+// This models that behaviour closely enough for the Files defect to reproduce,
+// and no further — it is not a markdown serializer. On a plain bullet item
+// (NOT a `- [ ]` task item, which it leaves alone), outside inline code spans:
+//   1. the bullet is re-written as `*`;
+//   2. a `__x__` becomes `**x**` (underscore strong emphasis re-serialized with
+//      asterisks — the underscores are gone for good);
+//   3. `**` runs pair up left to right, and so do single `*`s; an unpaired one,
+//      and any run of three or more, is backslash-escaped;
+//   4. an `_` that opens a path segment (line start or after `/`) is escaped.
+// The last row above is not reproduced byte for byte (the model yields
+// `generators/**/**snapshots**/**`), but what matters is: the underscores are
+// lost all the same, and nothing on read can bring them back.
+// Code-span contents are kept literal, as Linear keeps them. The model is
+// idempotent — an already-escaped `\*` / `\_` is not escaped again — because the
+// stores read a description, edit it, and write it back.
+
+/** Normalize one plain (non-code-span) run of bullet-item text — steps 2–4 above. */
+function normalizePlainMarkdown(text: string): string {
+  const strong = text.replace(/__([^_\s](?:[^_]*[^_\s])?)__/g, '**$1**');
+  const toks: { text: string; run?: number }[] = [];
+  for (let i = 0; i < strong.length; ) {
+    if (strong[i] === '\\' && i + 1 < strong.length) {
+      toks.push({ text: strong.slice(i, i + 2) }); // an existing escape — kept as-is
+      i += 2;
+    } else if (strong[i] === '*') {
+      let j = i;
+      while (j < strong.length && strong[j] === '*') j++;
+      toks.push({ text: strong.slice(i, j), run: j - i });
+      i = j;
+    } else {
+      toks.push({ text: strong[i] });
+      i++;
+    }
+  }
+  for (const len of [1, 2]) {
+    const at = toks.flatMap((t, k) => (t.run === len ? [k] : []));
+    if (at.length % 2 === 1) toks[at[at.length - 1]].run = -1; // the unpaired one
+  }
+  const escaped = toks
+    .map((t) => (t.run === undefined || t.run === 1 || t.run === 2 ? t.text : t.text.replace(/\*/g, '\\*')))
+    .join('');
+  return escaped.replace(/(^|\/)_/g, '$1\\_');
+}
+
+/** Normalize one bullet item's text: code spans literal, everything else through {@link normalizePlainMarkdown}. */
+function normalizeInlineMarkdown(text: string): string {
+  let out = '';
+  let plain = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '`') {
+      plain += text[i++];
+      continue;
+    }
+    let j = i;
+    while (j < text.length && text[j] === '`') j++;
+    const fence = text.slice(i, j);
+    // the closing fence: the next backtick run of exactly the same length
+    const closeRe = /`+/g;
+    closeRe.lastIndex = j;
+    let close: RegExpExecArray | null = closeRe.exec(text);
+    while (close !== null && close[0].length !== fence.length) close = closeRe.exec(text);
+    if (close === null) {
+      plain += fence; // no closing fence — the backticks are literal text
+      i = j;
+      continue;
+    }
+    out += normalizePlainMarkdown(plain) + text.slice(i, close.index + fence.length);
+    plain = '';
+    i = close.index + fence.length;
+  }
+  return out + normalizePlainMarkdown(plain);
+}
+
+/**
+ * The description as the modeled Linear stores it (see the block comment
+ * above). Only plain bullet items change; every other line is kept verbatim.
+ */
+function normalizeLinearMarkdown(markdown: string): string {
+  return markdown
+    .split('\n')
+    .map((line) => {
+      const m = /^(\s*)[-*](\s+)(.*)$/.exec(line);
+      if (!m || /^\[[ xX]\]/.test(m[3])) return line;
+      return `${m[1]}*${m[2]}${normalizeInlineMarkdown(m[3])}`;
+    })
+    .join('\n');
+}
+
 /** State categories that make an issue closed (excluded from listOpenIssues). */
 const CLOSED_TYPES = new Set<LinearStateType>(['completed', 'canceled']);
 
@@ -183,9 +284,26 @@ export class InMemoryLinearApi implements LinearApi {
    */
   private readonly boundProject: string | undefined;
 
-  constructor(teamKey = 'EX', project?: string) {
+  /** When true, every stored description passes through {@link normalizeLinearMarkdown}. */
+  private readonly normalizeMarkdown: boolean;
+
+  /**
+   * @param options.normalizeMarkdown  model Linear's save-time markdown
+   *   normalization on every description write (see
+   *   {@link normalizeLinearMarkdown}). OFF by default so the storage-aware
+   *   specs that assert a literal description keep seeing what they wrote; the
+   *   conformance run turns it ON, which is what lets a Files entry that does
+   *   not survive Linear's normalization fail a test at all.
+   */
+  constructor(teamKey = 'EX', project?: string, options: { normalizeMarkdown?: boolean } = {}) {
     this.teamKey = teamKey;
     this.boundProject = project;
+    this.normalizeMarkdown = options.normalizeMarkdown ?? false;
+  }
+
+  /** The description as Linear would store it — normalized when the fake models that. */
+  private stored(description: string): string {
+    return this.normalizeMarkdown ? normalizeLinearMarkdown(description) : description;
   }
 
   /**
@@ -214,7 +332,7 @@ export class InMemoryLinearApi implements LinearApi {
     this.issues.set(identifier, {
       identifier,
       title: input.title,
-      description: input.description,
+      description: this.stored(input.description),
       labels: [...new Set(input.labels)],
       stateName: this.defaultCreateStateName(),
       updatedAt: this.stamp(),
@@ -234,7 +352,7 @@ export class InMemoryLinearApi implements LinearApi {
 
   async setDescription(identifier: string, description: string): Promise<void> {
     const issue = this.mustGet(identifier);
-    issue.description = description;
+    issue.description = this.stored(description);
     this.touch(issue);
   }
 
