@@ -66,6 +66,8 @@ git show "refs/review/$ROW" -- <relevant file>
 ```
 Set `gitStateSane` true iff all four hold.
 
+**A lingering unstaged modification of exactly one path is not a finding, when that path is the one a Worker's workspace-setup `git reset --mixed <anchorSha>` fallback left behind (issue #1066: the anchor-reset refused a path neither the shell nor the file-editing tool may write, e.g. a tracked, agent-write-denied `.claude/settings.json`).** The Files-glob check above diffs `refs/review/$ROW` itself, never the raw working tree — an unstaged path was never staged, so it is absent from that diff by construction, and declared globs are staged by name at commit time regardless. Flag it only if it is STAGED, part of the reviewed commit, or a path other than the one the Worker's own report named.
+
 The conflict-marker grep above is trustworthy only because `source-encoding-guard.spec.ts` has already established that no tracked text file in the review tree carries a raw NUL byte — the one byte that would make this grep report a file clean without having read it at all.
 
 **Reading the pull request itself goes through the engine seam, never a raw `gh`.** The Closed-by sub-check reads the Worker *report*; when you need the pull request — its state, its url, or whether its body really carries the close phrase — ask the code host the way every other station does, through `host-pr` ([Convention 7](../../wave-shared/reference/convention-07-host-landing-seam.md)), invoked through the consumer's configured engine CLI:
