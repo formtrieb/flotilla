@@ -1169,7 +1169,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_280_000; // RAISED by issue #1066 — see below (the docblock above stops at #998's own reasoning).
+const LOADED_CORPUS_CEILING_BYTES = 1_282_000; // RAISED by issue #1065 — see below (the docblock above stops at #998's own reasoning).
 // NOT raised or lowered by issue #817 (wave-setup's second residual-form diet): that row's own
 // edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
 // up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
@@ -1267,6 +1267,18 @@ const LOADED_CORPUS_CEILING_BYTES = 1_280_000; // RAISED by issue #1066 — see 
 // moves to that sum rounded UP to the next full KB (1 KB = 1000 B): **1,280,000 B**. 868 B
 // of headroom left. Shared standing load untouched (162,892 B — this row touches no
 // `wave-shared/` file).
+// RAISED by issue #1065 (`--title-file` on `host-pr create` and `route-tuple`, for a PR title that
+// quotes a git command — the harness's worktree-isolation guard refused one inside a quoted
+// `--title` value): wave-shared's `reference/convention-13-one-bash-call-per-step.md` gains Catalog
+// entry 8 and a matching clause in its "Live occurrences" pointer (+989 B), and wave-start's
+// `reference/workflow-driver.md` gains the title's file form beside `--body-file` (+381 B); the
+// field quote and the probe record went to the `evidence/` sibling, which neither measure counts.
+// At anchor commit `706038809933e6005bcecf64beb7454fe7e29f6a` the population measured
+// 1,279,759 B over 57 files (241 B under the previous 1,280,000 B ceiling). This row's edit adds
+// 1,370 B, re-measured at **1,281,129 B** over the same 57 files — past that ceiling, so it moves to
+// that sum rounded UP to the next full KB (1 KB = 1000 B): **1,282,000 B**. 871 B of headroom left.
+// Shared standing load NOT raised: its one touched file (+989 B) re-measures the class at
+// 164,240 B over the same 18 files (from 163,251 B; next full KB 165,000 < 168,000) — 3,760 B left.
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

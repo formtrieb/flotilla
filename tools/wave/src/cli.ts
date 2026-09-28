@@ -10,7 +10,7 @@
  *   npx tsx tools/wave/src/cli.ts merge-order (--spine <path> | <wave-md-path>)
  *   npx tsx tools/wave/src/cli.ts closed-by <closed-by-line>
  *   npx tsx tools/wave/src/cli.ts detect-host <remote-url>
- *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>] [--body <t> | --body-file <path>]
+ *   npx tsx tools/wave/src/cli.ts host-pr <create|arm|merge|status> --branch <b> [--remote <url>] [--method <m>] [--title <t> | --title-file <path>] [--body <t> | --body-file <path>]
  *   npx tsx tools/wave/src/cli.ts worktree-cleanup (--dry-run | --spine <spine> | --branches <b1,b2> | <repo-root>) [--orphans] [--detached] [--probes-only] [...]
  *   npx tsx tools/wave/src/cli.ts resume --spine <path> --reports-dir <dir> --verdicts-dir <dir> [...]
  *   npx tsx tools/wave/src/cli.ts store-preflight [--config <path>]
@@ -274,8 +274,12 @@
  * host-pr (ADR-0019 + ADR-0023) — the host-write verb group. Every host write
  * goes through the engine host seam; `gh` is on none of these paths. `create`
  * opens the PR (find-before-create idempotent — an existing open PR is reused,
- * requires --title plus EXACTLY ONE of --body <body> and --body-file <path>,
- * reads GITHUB_TOKEN from the env); arm/merge/status land it. `--body-file`
+ * requires EXACTLY ONE of --title <title> and --title-file <path> plus EXACTLY
+ * ONE of --body <body> and --body-file <path>,
+ * reads GITHUB_TOKEN from the env); arm/merge/status land it. `--title-file`
+ * (issue #1065) reads the title from a file, one trailing newline trimmed — the
+ * form for a title quoting a git command, which a worktree-isolation guard has
+ * refused even inside a quoted `--title` value. `--body-file`
  * reads the body from a file verbatim and is the form to reach for whenever the
  * body is more than one paragraph — a multi-paragraph inline `--body` has been
  * refused in the field by an agent harness's worktree-isolation guard on a call
@@ -288,7 +292,8 @@
  *   1 — create failed (create-failed + fallbackPrefillUrl); not landed (no-pr |
  *       refused); no adapter for the host; or a host error
  *   2 — usage error — including create's body routes: --body and --body-file
- *       both given, neither given, or a --body-file path that cannot be read
+ *       both given, neither given, or a --body-file path that cannot be read —
+ *       and its title routes the same way, plus an empty --title-file
  *
  * worktree-cleanup exit codes:
  *   0 — success (nothing to remove, or all selected removed cleanly). The
@@ -728,7 +733,7 @@ const SUBCOMMAND_PURPOSE: Readonly<Record<Subcommand, string>> = {
   'closed-by': 'Classify a `Closed-by:` line into { class, needsPin }.',
   'detect-host': 'Parse a git remote URL into { host, workspace, repo }.',
   'host-pr':
-    'Open, arm, merge or probe a pull request on the code host (create|arm|merge|status|preflight); create takes its body inline (--body) or from a file (--body-file).',
+    'Open, arm, merge or probe a pull request on the code host (create|arm|merge|status|preflight); create takes its title and body inline (--title, --body) or from a file (--title-file, --body-file).',
   'worktree-cleanup': 'List, plan, and (unless --dry-run) remove pushed-and-clean agent worktrees.',
   'conflict-map': 'Compute the file-overlap conflict matrix across a set of issues.',
   'cross-wave': 'Check whether a candidate batch is parallel-safe against an already-claimed batch.',

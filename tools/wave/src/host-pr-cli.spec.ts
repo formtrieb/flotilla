@@ -1842,6 +1842,162 @@ describe('host-pr create --body-file — the body comes from a file (issue #702)
   });
 });
 
+// ─── host-pr create --title-file (issue #1065) ───────────────────────────────
+//
+// The reported gap: a worktree-isolated Worker's `host-pr create` was REFUSED by
+// the harness's worktree-isolation guard because its quoted `--title` VALUE
+// contained git-command text — the row's subject was that command — and the
+// `--title "$(cat f)"` workaround was refused in turn as a computed value. The
+// guard is harness-side; what is pinned here is the flag contract that keeps the
+// title off the command line: the exclusive-or with `--title`, the one-newline
+// trim, the empty refusal, and create-only scope.
+
+describe('host-pr create --title-file — the title comes from a file (issue #1065)', () => {
+  const GIT_FLAVOURED_TITLE = 'Workspace setup: fall back to `git reset --mixed` when `git reset --hard` is refused';
+  const BODY = 'Summary.\n\nCloses #1065';
+
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'host-pr-title-file-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function titleFile(content: string, name = 'pr-title.txt'): string {
+    const p = join(dir, name);
+    writeFileSync(p, content, 'utf-8');
+    return p;
+  }
+
+  /** Run a create with `titleArgs` against a host fake that has no open PR; return exit code and the POSTed title. */
+  async function createWith(titleArgs: string[]): Promise<{ code: number; postedTitle?: string; methods: string[] }> {
+    let posted: string | undefined;
+    const { http, requests } = fakeHttp({
+      get: () => ({ status: 200, json: [] }),
+      post: (_url, body) => {
+        posted = body;
+        return { status: 201, json: { html_url: NEW_PR } };
+      },
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/1065-title-file', ...titleArgs, '--body', BODY, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    return {
+      code,
+      ...(posted === undefined ? {} : { postedTitle: JSON.parse(posted).title as string }),
+      methods: requests.map((r) => r.method),
+    };
+  }
+
+  it('CREATE: the PR title equals the file content with its trailing newline trimmed', async () => {
+    const r = await createWith(['--title-file', titleFile(`${GIT_FLAVOURED_TITLE}\n`)]);
+    expect(r.code).toBe(0);
+    expect(out()).toMatchObject({ ok: true, verb: 'create', outcome: 'created', url: NEW_PR });
+    expect(r.postedTitle).toBe(GIT_FLAVOURED_TITLE);
+  });
+
+  it('REUSE: an already-open PR has its title re-written to the file content (trailing newline trimmed)', async () => {
+    let patched: string | undefined;
+    const { http } = fakeHttp({
+      get: () => ({ status: 200, json: [{ html_url: EXISTING_PR, number: 7, body: 'Old.\n\nCloses #1065' }] }),
+      patch: (_url, body) => {
+        patched = body;
+        return { status: 200, json: {} };
+      },
+    });
+    const code = await runHostPr(
+      ['create', '--branch', 'wave/1065-title-file', '--title-file', titleFile(`${GIT_FLAVOURED_TITLE}\n`), '--body', BODY, '--remote', GITHUB_REMOTE],
+      undefined,
+      { http, env: ENV },
+    );
+    expect(code).toBe(0);
+    expect(out()).toMatchObject({ outcome: 'reused', updated: true });
+    expect(JSON.parse(patched as string).title).toBe(GIT_FLAVOURED_TITLE);
+  });
+
+  it('only ONE trailing newline is trimmed (\\n or \\r\\n) — and a file with none is taken as-is', async () => {
+    expect((await createWith(['--title-file', titleFile('T\n', 'a.txt')])).postedTitle).toBe('T');
+    expect((await createWith(['--title-file', titleFile('T\r\n', 'b.txt')])).postedTitle).toBe('T');
+    expect((await createWith(['--title-file', titleFile('T\n\n', 'c.txt')])).postedTitle).toBe('T\n');
+    expect((await createWith(['--title-file', titleFile('T', 'd.txt')])).postedTitle).toBe('T');
+  });
+
+  it('EQUIVALENCE: the same title inline and by file sends an identical request and prints identical JSON', async () => {
+    stdout = '';
+    const inline = await createWith(['--title', GIT_FLAVOURED_TITLE]);
+    const inlineJson = stdout;
+    stdout = '';
+    const viaFile = await createWith(['--title-file', titleFile(`${GIT_FLAVOURED_TITLE}\n`)]);
+    expect(viaFile.code).toBe(inline.code);
+    expect(viaFile.postedTitle).toBe(inline.postedTitle);
+    expect(viaFile.methods).toEqual(inline.methods);
+    expect(stdout).toBe(inlineJson);
+  });
+
+  it('BOTH --title and --title-file → exit 2 naming BOTH flags, before any request', async () => {
+    const r = await createWith(['--title', 'T', '--title-file', titleFile('T\n')]);
+    expect(r.code).toBe(2);
+    expect(stderr).toMatch(/exactly ONE of --title <title> and --title-file <path>/);
+    expect(stderr).toMatch(/both were given/);
+    expect(r.methods).toEqual([]);
+  });
+
+  it('NEITHER --title nor --title-file → exit 2 naming BOTH flags, before any request', async () => {
+    const r = await createWith([]);
+    expect(r.code).toBe(2);
+    expect(stderr).toContain('--title <title>');
+    expect(stderr).toContain('--title-file <path>');
+    expect(r.methods).toEqual([]);
+  });
+
+  it('an EMPTY title file → exit 2 naming the path, before any request', async () => {
+    const empty = titleFile('', 'empty.txt');
+    const r = await createWith(['--title-file', empty]);
+    expect(r.code).toBe(2);
+    expect(stderr).toContain(empty);
+    expect(stderr).toMatch(/is empty/);
+    expect(r.methods).toEqual([]);
+  });
+
+  it('a title file holding only a newline is EMPTY once trimmed → exit 2', async () => {
+    const r = await createWith(['--title-file', titleFile('\n', 'nl.txt')]);
+    expect(r.code).toBe(2);
+    expect(stderr).toMatch(/is empty/);
+  });
+
+  it('an unreadable title file → exit 2 naming the path', async () => {
+    const missing = join(dir, 'nope.txt');
+    const r = await createWith(['--title-file', missing]);
+    expect(r.code).toBe(2);
+    expect(stderr).toMatch(/could not read --title-file/);
+    expect(stderr).toContain(missing);
+    expect(r.methods).toEqual([]);
+  });
+
+  it('--title-file on a verb that writes no title is a usage error, never silently ignored', async () => {
+    const { host, calls } = fakeHost({ status: openPr('clean') });
+    const code = await runHostPr(
+      ['status', '--branch', 'b', '--title-file', titleFile('T\n'), '--remote', GITHUB_REMOTE],
+      host,
+    );
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/--title-file is only supported by 'create'/);
+    expect(calls).toEqual([]);
+  });
+
+  it("create's contract renders the title alternation and says when to reach for the file", async () => {
+    await runHostPr(['create', '--help'], undefined, { env: ENV });
+    const text = stdout + stderr;
+    expect(text).toContain('(--title <title> | --title-file <path>)');
+    expect(text).toMatch(/quotes a git command/);
+  });
+});
+
 // ─── host-pr create + preflight resolve through the ONE seam (ADR-0029) ──────
 //
 // Both credential edges of this runner obtain their token from the shared
