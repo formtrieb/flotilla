@@ -882,3 +882,25 @@ describe('verb-contract drift — --expect-digest is one flag, declared the same
     expect(flagLiteralsIn(sourceOf('route-cli.ts'))).toContain('--expect-digest');
   });
 });
+
+describe('verb-contract drift — --payload-encoding is write-verdict only (the verdict Scribe copies base64)', () => {
+  it('write-verdict declares it: optional, one value, value type enum, no alias', () => {
+    const f = AGGREGATE['write-verdict'].flags.find((x) => x.canonical === '--payload-encoding');
+    expect(f, 'write-verdict must declare --payload-encoding').toBeDefined();
+    expect(f).toMatchObject({ value: 'one', valueType: 'enum', placeholder: '<json|base64>' });
+    expect(f?.required ?? false).toBe(false);
+    expect(f?.aliases ?? []).toEqual([]);
+  });
+
+  it('no OTHER verb declares it — write-report included (the report Scribe is unchanged)', () => {
+    const others = Object.entries(AGGREGATE)
+      .filter(([verb]) => verb !== 'write-verdict')
+      .filter(([, c]) => c.flags.some((x) => x.canonical === '--payload-encoding' || (x.aliases ?? []).includes('--payload-encoding')))
+      .map(([verb]) => verb);
+    expect(others).toEqual([]);
+  });
+
+  it('the literal route-cli.ts spells is the declared one', () => {
+    expect(flagLiteralsIn(sourceOf('route-cli.ts'))).toContain('--payload-encoding');
+  });
+});

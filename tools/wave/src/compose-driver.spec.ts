@@ -178,7 +178,10 @@ interface AgentCall {
  * would hand it — the reviewerBrief reads the report it is given, the Scribe
  * briefs carry the payload byte-exact.
  */
-async function runComposedDriver(script: string): Promise<{
+async function runComposedDriver(
+  script: string,
+  stub: { verdict?: Record<string, unknown> } = {},
+): Promise<{
   calls: AgentCall[];
   logs: string[];
   phases: string[];
@@ -207,6 +210,7 @@ async function runComposedDriver(script: string): Promise<{
       };
     }
     if (label.startsWith('review:')) {
+      if (stub.verdict) return stub.verdict;
       return {
         verdict: 'approve',
         branchReviewed: 'wave/x',
@@ -541,23 +545,35 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
 
   /**
    * The payload line and the write command, read off a RENDERED Scribe brief —
-   * never off a helper call. The payload is the line immediately above step 3;
-   * the write command is the one line naming the verb's canonical file flag.
+   * never off a helper call. A report's payload is the line immediately above
+   * step 3; a verdict's is the base64 token fenced there, DECODED here, so
+   * `payloadLine` is the JSON either way. The write command is the one line
+   * naming the verb's canonical file flag.
    */
   function scribeParts(brief: string, verb: 'write-report' | 'write-verdict'): {
     payloadLine: string;
+    token?: string;
     writeLine: string;
     digest: string;
   } {
     const lines = brief.split('\n');
     const step3 = lines.findIndex((l) => l.startsWith('3. As a SEPARATE Bash call'));
     expect(step3, 'the rendered brief must carry step 3').toBeGreaterThan(0);
-    const payloadLine = lines[step3 - 1];
+    let payloadLine = lines[step3 - 1];
+    let token: string | undefined;
+    if (verb === 'write-verdict') {
+      // The fence, the token, the fence — and the token is pure base64.
+      expect(lines[step3 - 1]).toBe('```');
+      expect(lines[step3 - 3]).toBe('```');
+      token = lines[step3 - 2];
+      expect(token).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+      payloadLine = Buffer.from(token, 'base64').toString('utf8');
+    }
     const writeLines = lines.filter((l) => l.includes(`${verb} --${verb === 'write-report' ? 'report' : 'verdict'}-file `));
     expect(writeLines, 'exactly one rendered write command').toHaveLength(1);
     const match = /--expect-digest ([0-9a-f]{16})$/.exec(writeLines[0]);
     expect(match, `the write command must END with --expect-digest <digest>: ${writeLines[0]}`).not.toBeNull();
-    return { payloadLine, writeLine: writeLines[0], digest: (match as RegExpExecArray)[1] };
+    return { payloadLine, token, writeLine: writeLines[0], digest: (match as RegExpExecArray)[1] };
   }
 
   it("the Scribe write command carries the digest of EXACTLY the payload embedded in that brief (report and verdict, both rows)", async () => {
@@ -603,6 +619,80 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
       expect(existsSync(join(reportsDir, '42-1.md'))).toBe(false);
       expect(cliMain(args(faithful))).toBe(0);
       expect(existsSync(join(reportsDir, '42-1.md'))).toBe(true);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the verdict Scribe brief carries NO raw verdict JSON — only the fenced base64 token, and its write call decodes it', async () => {
+    const { calls, result } = await runComposedDriver(script);
+    for (const id of ['42', '43']) {
+      const brief = calls.find((c) => c.opts.label === `scribe-verdict:${id}`)!.brief;
+      const verdict = result.find((t) => t.id === id)!.verdict as Record<string, unknown>;
+      const json = JSON.stringify(verdict);
+      expect(brief).not.toContain(json);
+      // Not even a fragment: no key/value pair of the verdict as JSON renders it.
+      for (const [k, v] of Object.entries(verdict)) {
+        expect(brief, k).not.toContain(`${JSON.stringify(k)}:${JSON.stringify(v)}`);
+      }
+      const { token, writeLine } = scribeParts(brief, 'write-verdict');
+      expect(token).toBe(Buffer.from(json, 'utf8').toString('base64'));
+      expect(writeLine).toContain('--payload-encoding base64');
+      expect(writeLine).toContain(`.flotilla/tmp/verdict-${id}-1.b64"`);
+    }
+    // The report Scribe is out of scope and unchanged: raw JSON line, no encoding flag.
+    const reportBrief = calls.find((c) => c.opts.label === 'scribe-report:42')!.brief;
+    expect(reportBrief).not.toContain('--payload-encoding');
+    expect(reportBrief).toContain('"outcome":"done"');
+  });
+
+  it('END TO END (verdict) — a hard verdict (quotes, arrows, &amp;, backslashes, multi-byte) round-trips: driver encode → write-verdict decode → digest match → sidecar equal to the payload', async () => {
+    const hard = {
+      verdict: 'approve',
+      branchReviewed: 'wave/42-first',
+      riskClass: 'public-API-change',
+      workerReportDigest: 'said "done" → 6/6 green; \\path\\to "x" &amp; <b>',
+      acVerification: [
+        {
+          ac: 'nested "quotes \'inside\' quotes" → arrows ⇒ ✓',
+          met: 'met',
+          evidence: 'C:\\tmp\\a.json &lt;tag&gt; &amp; Grüße – 漢字 🚀 👩‍💻',
+        },
+      ],
+      reviewerFocusItems: ['backslash-n literal: \\n, a real newline:\nnext line, a tab:\tend'],
+    };
+    const hardScript = composeDriverScript({
+      template: TEMPLATE,
+      ...CONSTANTS,
+      rows: [row({ id: '42', slug: 'first' })],
+    });
+    const { calls } = await runComposedDriver(hardScript, { verdict: hard });
+    const brief = calls.find((c) => c.opts.label === 'scribe-verdict:42')!.brief;
+    const { token, digest, payloadLine } = scribeParts(brief, 'write-verdict');
+    expect(JSON.parse(payloadLine)).toEqual(hard);
+    expect(brief).not.toContain('Grüße');
+    expect(brief).not.toContain('&amp;');
+    const dir = mkdtempSync(join(tmpdir(), 'scribe-b64-'));
+    const verdictsDir = join(dir, 'verdicts');
+    const file = join(dir, 'verdict-42-1.b64');
+    // A Scribe whose tool wrapped the token across lines is still faithful.
+    writeFileSync(file, `${(token as string).replace(/(.{60})/g, '$1\n')}\n`);
+    const out = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const err = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const args = [
+        'write-verdict', '--verdict-file', file, '--verdicts-dir', verdictsDir, '--id', '42',
+        '--payload-encoding', 'base64', '--iter', '1', '--expect-digest', digest,
+      ];
+      expect(cliMain(args)).toBe(0);
+      const written = readFileSync(join(verdictsDir, '42-1.md'), 'utf8');
+      const fenced = /```json\n([\s\S]*)\n```/.exec(written);
+      expect(fenced).not.toBeNull();
+      const sidecar = JSON.parse((fenced as RegExpExecArray)[1]) as unknown;
+      expect(sidecar).toEqual(hard);
+      expect(canonicalDigest(sidecar)).toBe(digest);
     } finally {
       out.mockRestore();
       err.mockRestore();
@@ -4899,7 +4989,7 @@ describe('compose-driver — a Reviewer-only row switches exactly two stages, pe
 
     const verdictScribe = calls.find((c) => c.opts.label === 'scribe-verdict:42')!;
     expect(verdictScribe.brief).toContain(
-      `write-verdict --verdict-file "${CONSTANTS.repoRoot}/.flotilla/tmp/verdict-42-1.json" --verdicts-dir "${CONSTANTS.verdictsDir}" --id 42 --iter 1`,
+      `write-verdict --verdict-file "${CONSTANTS.repoRoot}/.flotilla/tmp/verdict-42-1.b64" --verdicts-dir "${CONSTANTS.verdictsDir}" --id 42 --payload-encoding base64 --iter 1`,
     );
 
     const tuple = result.find((t) => t.id === '42')!;
