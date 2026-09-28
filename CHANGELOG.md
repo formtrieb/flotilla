@@ -9,6 +9,46 @@ Two artifacts are versioned together and released as one unit — the npm packag
 (`.claude-plugin/plugin.json`). A single entry below covers both. How a release is cut
 is documented separately in [docs/RELEASING.md](docs/RELEASING.md).
 
+## [2.12.0] — 2026-09-28
+
+An operator's approval of a public-API change now continues the row in one call: `route-tuple --approve "<reason>"` runs the ordinary approve path from the `public-api-approval-required` stop. This is the first built slice of ADR-0047 ([#1064](https://github.com/formtrieb/flotilla/issues/1064)). `host-pr create` and `route-tuple` read a PR title from a file, so a title that quotes a git command no longer trips the harness guard ([#1065](https://github.com/formtrieb/flotilla/issues/1065)). On GitHub and Linear, `## Files` entries are written as code spans, which Linear's markdown normalization can no longer alter ([#1054](https://github.com/formtrieb/flotilla/issues/1054)). Nothing released is removed.
+
+### Upgrading
+
+1. **Plugin/marketplace:** update the plugin to 2.12.0. Marketplace listing unchanged.
+2. **Engine pin:** `@formtrieb/flotilla-engine` 2.11.0 → 2.12.0. Vendored form: re-copy `tools/wave/`.
+3. **Config keys:** none.
+4. **Hook re-copy:** none.
+5. **Allowlist parity:** none.
+6. **Behaviour heads-ups** (same input, different outcome):
+   - **Issue bodies on GitHub and Linear now carry each `## Files` entry as an inline code span.** Bodies written before this release still read, and Linear's `\*` / `\_` escapes in them are reversed. An entry Linear already turned from `__x__` into emphasis cannot be recovered: re-declare it ([#1054](https://github.com/formtrieb/flotilla/issues/1054), [#698](https://github.com/formtrieb/flotilla/issues/698)).
+   - The shipped driver's verdict Scribe writes a base64 payload file and calls `write-verdict --payload-encoding base64`. Keep the plugin and the engine in lockstep ([#1068](https://github.com/formtrieb/flotilla/issues/1068)).
+   - `host-pr create` takes exactly one of `--title` / `--title-file`. Existing `--title` callers are unchanged, and giving neither still exits 2 ([#1065](https://github.com/formtrieb/flotilla/issues/1065)).
+7. **Implementer heads-ups** (additive; no root export added or removed):
+   - `WaveEvent` and `WAVE_EVENTS` gain `human-approve`, legal only from `reviewing` and `verdict-in`. An exhaustive `switch` over `WaveEvent` needs the new case ([#1064](https://github.com/formtrieb/flotilla/issues/1064)).
+
+### Added
+
+- `route-tuple --approve "<reason>"` continues a row past `public-api-approval-required` after the operator's approval. The reason follows the `--ruling` rule. The approval is recorded in the PR body and as a resolved spine disclosure ([#1064](https://github.com/formtrieb/flotilla/issues/1064)).
+- `--title-file <path>` on `host-pr create` and `route-tuple`. Convention 13 catalogs git-command text inside an argument value ([#1065](https://github.com/formtrieb/flotilla/issues/1065)).
+- `write-verdict --payload-encoding <json|base64>`, default `json`. It uses a strict decoder that names whether the base64 or the JSON failed ([#1068](https://github.com/formtrieb/flotilla/issues/1068)).
+- The Worker brief's reset-refusal branch offers `git reset --mixed <anchor>` for a tracked path neither tool may write, with two post-conditions ([#1066](https://github.com/formtrieb/flotilla/issues/1066)).
+
+### Changed
+
+- wave-setup states the tracked `sandbox` block's reach as measured, including that the grant travels through the dispatching session's checkout ([#1059](https://github.com/formtrieb/flotilla/issues/1059)).
+
+### Fixed
+
+- Linear's markdown normalization altered `## Files` entries (`\*\*`, `\_components`, `__snapshots__`) on the round trip ([#1054](https://github.com/formtrieb/flotilla/issues/1054)).
+- The dor-gate spec's capped-commit fixture flaked under load. It now builds its history with a bounded number of git processes in an isolated git environment ([#996](https://github.com/formtrieb/flotilla/issues/996)).
+
+### Not yet proven
+
+- Real Linear keeping code-span contents literal on save: no live write was made. The first create/annotate/read round trip on a Linear team is the gate ([#1080](https://github.com/formtrieb/flotilla/issues/1080)).
+- The base64 verdict payload: its first live round was refused as a mis-copied token, so the Scribe copy problem is not solved yet ([#1078](https://github.com/formtrieb/flotilla/issues/1078)).
+- `route-tuple --approve` has not yet run in a live wave.
+
 ## [2.11.0] — 2026-09-28
 
 A verify command can now say how it behaves inside the sandbox on your machine: operator-authored **environment notes** render beside the command in both briefs, bounded at load, and explain a failure without ever excusing it ([#1050](https://github.com/formtrieb/flotilla/issues/1050), [#1051](https://github.com/formtrieb/flotilla/issues/1051)). On Linear, `store-preflight`'s PR-automation reading now grades the alignment decided in ADR-0020's 2026-09-27 amendment: "No action" before the merge, a completed state on merge ([#1056](https://github.com/formtrieb/flotilla/issues/1056)). ADR-0049 is accepted: a tracked `sandbox` block was measured reaching a dispatched worktree ([#1052](https://github.com/formtrieb/flotilla/issues/1052)). Nothing released is removed.
