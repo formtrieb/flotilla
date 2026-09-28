@@ -827,6 +827,17 @@ lives in `workflow-driver.md`'s own evidence file, which sits outside this file'
 for this row; this entry adds the matching positive case to this catalog rather than duplicating that
 file's text.
 
+**A sibling case the file-editing-tool remedy above does not cover (issue #1066):** the restore above
+presumes the surviving path is one the file-editing tool MAY write. A consumer whose tracked
+`.claude/settings.json` is itself agent-write-denied has no such path — the refused path is refused to
+both tool surfaces, not just the shell one — so the brief's "IF THE RESET IS REFUSED" branch now offers
+`git reset --mixed <anchorSha>` for exactly that case instead: it moves `HEAD` and the index to the
+anchor without touching the working tree, so the refused path is left holding its pre-reset content as
+an unstaged difference nobody stages, while every other already-hard-reset path keeps its anchor
+content. `workflow-driver.md`'s own evidence carries the fuller account; this entry only cross-references
+it so the two dead ends — refused-to-the-shell and refused-to-both-surfaces — stay distinguishable from
+this catalog's own reset-refusal entry.
+
 ### Open question — does any clause cover a single-path restore discarding an unrelated edit?
 
 **Same wave (`2026-09-22-guards-shapes-and-residues`); no row, iteration or disclosure ref given.** A

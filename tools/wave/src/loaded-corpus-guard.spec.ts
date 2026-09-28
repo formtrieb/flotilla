@@ -1169,7 +1169,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_279_000; // RAISED by issue #1059 — see below (the docblock above stops at #998's own reasoning).
+const LOADED_CORPUS_CEILING_BYTES = 1_280_000; // RAISED by issue #1066 — see below (the docblock above stops at #998's own reasoning).
 // NOT raised or lowered by issue #817 (wave-setup's second residual-form diet): that row's own
 // edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
 // up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
@@ -1256,6 +1256,17 @@ const LOADED_CORPUS_CEILING_BYTES = 1_279_000; // RAISED by issue #1059 — see 
 // files — past the previous 1,278,000 B ceiling, so it moves to that sum rounded UP to the
 // next full KB (1 KB = 1000 B): 1,279,000 B. 571 B of headroom left. Shared standing load
 // untouched (162,892 B — this row touches no `wave-shared/` file).
+// RAISED by issue #1066 (the reviewer-side expectation for the new `git reset --mixed
+// <anchorSha>` workspace-setup fallback: a lingering unstaged modification of exactly the
+// refused path is not a finding, because the Files-glob check diffs the review ref, never
+// the raw working tree). At anchor commit `a7cead529ef44894dd5ee601779a6f77cc578e2d` the
+// population measured 1,278,429 B — row #1059's own landed figure, unchanged since (nothing
+// else touched `.claude/skills/**` or `.claude/agents/` between the two). This row's one
+// touched file, `wave-reviewer/reference/reviewer-checks.md`, adds 703 B, re-measured at
+// **1,279,132 B** over the same 57 files — past the previous 1,279,000 B ceiling, so it
+// moves to that sum rounded UP to the next full KB (1 KB = 1000 B): **1,280,000 B**. 868 B
+// of headroom left. Shared standing load untouched (162,892 B — this row touches no
+// `wave-shared/` file).
 
 /** Population floors. A measure over an empty population is green for the worst
  * possible reason, so both walkers have to keep finding files. */

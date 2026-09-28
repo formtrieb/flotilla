@@ -1424,6 +1424,16 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
   const REFUSAL_HEADLINE = '**IF THE RESET IS REFUSED, the two asserts above have a branch to take';
   const REFUSAL_BODY = /write-deny is\s+scoped PER TOOL SURFACE/;
   const REFUSAL_BLOCKED = /STOP and report `blocked`, naming the residual paths/;
+  // The `git reset --mixed` fallback (issue #1066): for a surviving path the
+  // file-editing tool may not write EITHER, restoring it is not an option, so
+  // the branch moves HEAD+index without touching the working tree instead.
+  const MIXED_RESET_HEADLINE =
+    '**If a surviving path may not be written by the file-editing tool either**';
+  const MIXED_RESET_BODY = /Run\s+`git reset --mixed/;
+  const MIXED_RESET_POSTCONDITIONS =
+    /`git status --porcelain` lists ONLY the refused path\(s\) — each one unstaged\./;
+  const MIXED_RESET_BLOCKED =
+    /STOP and report `blocked`, naming the residual paths and quoting the refusal\s+verbatim, exactly as the step below\./;
   const RETRY_NOT_REDISPATCH = /A harness\s+retry is NOT a re-dispatch:/;
   const RETRY_REANCHORS =
     /a retried FIRST iteration re-anchors to the round's anchor SHA exactly as a\s+first attempt does/;
@@ -1564,6 +1574,28 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
     expect(iter1).toMatch(/you may not re-run it with the sandbox off/);
   });
 
+  it('names `git reset --mixed <anchor>` as the fallback for a path the file-editing tool must not or cannot write either (issue #1066)', async () => {
+    const { iter1 } = await workerBriefs();
+    // The file-editing restore (step 2) still leads — this is the branch for
+    // the path where editing is forbidden or refused too, e.g. a consumer's
+    // tracked, agent-write-denied settings file.
+    expect(iter1).toContain(MIXED_RESET_HEADLINE);
+    expect(iter1).toMatch(MIXED_RESET_BODY);
+    expect(iter1).toContain(`git reset --mixed ${rows[0].anchorSha}`);
+    // Its OWN two post-conditions — not step 4's "fully clean" bar, which this
+    // fallback can never clear (the refused path is left modified by design).
+    expect(iter1).toContain(
+      `post-conditions: \`git rev-parse HEAD\` equals \`${rows[0].anchorSha}\`, and`,
+    );
+    expect(iter1).toMatch(MIXED_RESET_POSTCONDITIONS);
+    // …and why both hold is enough: declared Files globs are staged by name,
+    // so the refused, unstaged path never enters the commit.
+    expect(iter1).toMatch(/declared Files globs are\s+staged BY NAME at commit time/);
+    // …and it terminates the same way as the file-editing remedy: recovered,
+    // or an honest `blocked` — never "carry on".
+    expect(iter1).toMatch(MIXED_RESET_BLOCKED);
+  });
+
   it('handles a wave branch that already exists at the anchor without failing on branch creation', async () => {
     const { iter1 } = await workerBriefs();
     const branch = branchFor('42', 'first');
@@ -1593,6 +1625,10 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
     expect(redispatch).not.toMatch(/wave[ -]anchor/i);
     expect(redispatch).not.toContain(WIP_HEADLINE);
     expect(redispatch).not.toContain(REFUSAL_HEADLINE);
+    // The re-dispatch setup never re-anchors, so the refused-reset clause and
+    // its `git reset --mixed` fallback — both only meaningful WHILE re-
+    // anchoring — render nowhere in it either (issue #1066).
+    expect(redispatch).not.toContain(MIXED_RESET_HEADLINE);
     expect(redispatch).not.toMatch(RETRY_REANCHORS);
   });
 
@@ -1649,6 +1685,40 @@ describe('compose-driver — the iteration-1 setup instructs a Worker that inher
     expect(refusalBriefs.iter1).toContain(REFUSAL_HEADLINE); // headline-only pin still passes
     expect(refusalBriefs.iter1).not.toMatch(REFUSAL_BODY); // the body pins fire
     expect(refusalBriefs.iter1).not.toMatch(REFUSAL_BLOCKED);
+    // The gutted span swallows the `git reset --mixed` fallback too (it sits
+    // between the same two anchors) — so its pins fire here as well.
+    expect(refusalBriefs.iter1).not.toContain(MIXED_RESET_HEADLINE);
+    expect(refusalBriefs.iter1).not.toMatch(MIXED_RESET_BLOCKED);
+  });
+
+  it('NEGATIVE CONTROL — re-wording just the `git reset --mixed` fallback leaves the older refusal clause and its own headline intact (issue #1066)', async () => {
+    // Narrower than Probe B above: this guts ONLY the new fallback clause,
+    // leaving the file-editing restore (step 2), the older refusal headline
+    // and body, and the final re-assert step (step 4) all byte-intact —
+    // proving THIS clause's pins fail independently, not merely as
+    // collateral of gutting the whole surrounding branch.
+    const guttedMixedReset = TEMPLATE.replace(
+      /(\*\*If a surviving path may not be written by the file-editing tool either\*\*)[\s\S]*?exactly as the step below\./,
+      '$1 Figure it out yourself.',
+    );
+    expect(guttedMixedReset).not.toEqual(TEMPLATE); // the replace actually matched
+    expect(guttedMixedReset).toContain(MIXED_RESET_HEADLINE); // …and the headline survived it
+    const mixedResetBriefs = await workerBriefs(
+      composeDriverScript({ template: guttedMixedReset, ...CONSTANTS, rows }),
+    );
+    expect(mixedResetBriefs.iter1).toContain(MIXED_RESET_HEADLINE); // headline-only pin still passes
+    expect(mixedResetBriefs.iter1).not.toMatch(MIXED_RESET_BODY); // the body pins fire
+    expect(mixedResetBriefs.iter1).not.toMatch(MIXED_RESET_POSTCONDITIONS);
+    expect(mixedResetBriefs.iter1).not.toMatch(MIXED_RESET_BLOCKED);
+    // …and the untouched neighbours prove this was a narrow cut: the older
+    // refusal clause and the final re-assert step both still render whole.
+    expect(mixedResetBriefs.iter1).toContain(REFUSAL_HEADLINE);
+    expect(mixedResetBriefs.iter1).toMatch(REFUSAL_BODY);
+    expect(mixedResetBriefs.iter1).toMatch(
+      /Restore each surviving tracked path to its anchor content with your FILE-EDITING/,
+    );
+    expect(mixedResetBriefs.iter1).toMatch(REFUSAL_BLOCKED);
+    expect(mixedResetBriefs.iter1).toContain('4. Re-run both asserts.');
   });
 
   it('NEGATIVE CONTROL — the two allowlist-ruling clauses fail their BODY pins while their headlines stay byte-intact (issue #744)', async () => {

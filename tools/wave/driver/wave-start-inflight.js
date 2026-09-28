@@ -739,7 +739,22 @@ const WORKSPACE_SETUP_ITER1 = (issue) => `## Workspace setup (do first)
       refusal came from, used in the direction that works. If that read is ITSELF refused
       for a permission reason, report it under policy clause 12 and stop at \`blocked\`
       rather than guessing at the content.
-   3. Re-run both asserts. Clean, and \`HEAD\` equal to \`${issue.anchorSha}\` → continue.
+   3. **If a surviving path may not be written by the file-editing tool either** — a
+      permission/config file your OWN Worker policy forbids you from editing, or the
+      tool itself refuses the write, with a consumer's tracked, agent-write-denied
+      settings file the live case — do not edit it. Run
+      \`git reset --mixed ${issue.anchorSha}\` instead: it moves HEAD and the index to
+      the anchor WITHOUT touching the working tree, so every path the hard reset had
+      already written before it hit the refusal keeps that anchor content, and the
+      refused path alone is left holding its pre-reset content as an unstaged
+      difference against the now-anchor index. Then check this branch's OWN two
+      post-conditions: \`git rev-parse HEAD\` equals \`${issue.anchorSha}\`, and
+      \`git status --porcelain\` lists ONLY the refused path(s) — each one unstaged.
+      Both hold → continue: declared Files globs are staged BY NAME at commit time, so
+      a path outside them, left unstaged, never enters your commit. Either fails →
+      STOP and report \`blocked\`, naming the residual paths and quoting the refusal
+      verbatim, exactly as the step below.
+   4. Re-run both asserts. Clean, and \`HEAD\` equal to \`${issue.anchorSha}\` → continue.
       Still not → STOP and report \`blocked\`, naming the residual paths and quoting the
       refusal verbatim.
    Disclose the episode under \`judgmentCalls\` (mirrored in \`reviewerFocusItems\`) either
