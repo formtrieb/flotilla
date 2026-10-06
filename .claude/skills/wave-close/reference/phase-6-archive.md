@@ -142,6 +142,8 @@ Its `rows[]` carries every human-gated row with its `state` and an `awaitingHuma
 
 **Guard (idempotent):** `<wave-file>` already under `.flotilla/waves/_archive/` → print `already archived (no-op)`.
 
+**Flip the spine to `closed` — after both gates clear and every row is finalised, BEFORE the archive move (issue #682).** Run `{{wave-cli}} spine set-status <wave-file> closed` and read its exit code: non-zero → STOP, do not archive. It is the only writer of the frontmatter `**Status:**` line (never hand-edit it), and it is safe to re-run on a spine already reading `closed` (byte-identical no-op), so an interrupted close re-enters cleanly. It must precede the move: the archived file's status line is the close fact it carries, and a pulse that selects the oldest `ready` spine must never see an archived one.
+
 **A consumer's `.flotilla/` may or may not be git-tracked.** flotilla's own dogfood repo keeps it gitignored (toolkit, not consumer); most consumer repos track it (the spine is the durable WAL, so committing it enables resume from a fresh clone — see the setup convention in `wave-setup`). `git mv` fails outright on an ignored/untracked path, so the archive step **detects the spine's actual git-tracked status and picks the matching move, every time** — never assume from the consumer type or from what the last wave did. It also re-checks whether the move already happened, so a second run is a no-op rather than a failed move:
 
 ```bash
