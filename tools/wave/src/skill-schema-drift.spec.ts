@@ -5155,3 +5155,48 @@ describe('skill-schema-drift — the stamped probe: every naming-rule copy pinne
     expect(reverted).toContain(RETIRED_OUTCOME_EVIDENCE_LABEL);
   });
 });
+
+// ─── wave-close phase 6 flips the spine to closed before the archive move ────
+//
+// issue #682: wave-close archived the spine with its frontmatter still reading
+// `ready`, so an archived wave was indistinguishable from one never started.
+// This pins that the archive-phase reference names `spine set-status … closed`
+// BEFORE the archive move (the `mkdir -p` that opens the move block) and after
+// both archive gates.
+
+const PHASE_6_ARCHIVE_MD = join(
+  __dirname,
+  '../../../.claude/skills/wave-close/reference/phase-6-archive.md',
+);
+const CLOSED_FLIP_RE = /spine set-status <wave-file> closed/;
+const ARCHIVE_MOVE_ANCHOR = 'mkdir -p ".flotilla/waves/_archive"';
+
+describe('skill-schema-drift — wave-close phase 6 flips the spine to closed before the archive move (issue #682)', () => {
+  const md = readFileSync(PHASE_6_ARCHIVE_MD, 'utf-8');
+
+  it('names `spine set-status <wave-file> closed`, after both gates and before the archive move', () => {
+    const flip = md.search(CLOSED_FLIP_RE);
+    const move = md.indexOf(ARCHIVE_MOVE_ANCHOR);
+    expect(flip).toBeGreaterThan(-1);
+    expect(move).toBeGreaterThan(-1);
+    expect(flip).toBeLessThan(move);
+    expect(flip).toBeGreaterThan(md.indexOf('spine check-disclosures <wave-file>'));
+    expect(flip).toBeGreaterThan(md.indexOf('spine check-awaiting-human'));
+  });
+
+  it('reads the exit code and states the step is safe to re-run on a closed spine', () => {
+    const flip = md.search(CLOSED_FLIP_RE);
+    const para = md.slice(flip, md.indexOf('\n', flip));
+    expect(para).toMatch(/exit code/);
+    expect(para).toMatch(/re-run on a spine already reading `closed`/);
+  });
+
+  it('fails when the flip is dropped or moved after the archive move', () => {
+    const dropped = md.replace(CLOSED_FLIP_RE, 'spine set-status <wave-file> ready');
+    expect(dropped.search(CLOSED_FLIP_RE)).toBe(-1);
+    const flip = md.search(CLOSED_FLIP_RE);
+    const para = md.slice(flip, md.indexOf('\n', flip));
+    const moved = md.replace(para, '') + para;
+    expect(moved.search(CLOSED_FLIP_RE)).toBeGreaterThan(moved.indexOf(ARCHIVE_MOVE_ANCHOR));
+  });
+});

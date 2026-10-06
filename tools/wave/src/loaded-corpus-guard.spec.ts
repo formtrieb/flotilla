@@ -1169,7 +1169,7 @@ const SHARED_STANDING_LOAD_CEILING_BYTES = 168_000; // RAISED by issue #998 — 
  * Lowering a ceiling is still free; the next ratchet row takes this back down
  * to its own landed measure.
  */
-const LOADED_CORPUS_CEILING_BYTES = 1_282_000; // RAISED by issue #1065 — see below (the docblock above stops at #998's own reasoning).
+const LOADED_CORPUS_CEILING_BYTES = 1_283_000; // RAISED by issue #682 (wave-close phase 6 gains the closed-flip step: SKILL.md + phase-6 reference, re-measured 1,282,482 B over 57 files, next full KB) — earlier raise: issue #1065, see below.
 // NOT raised or lowered by issue #817 (wave-setup's second residual-form diet): that row's own
 // edit re-measures the population at 1,270,990 B over the same 57 files — 5,010 B of headroom,
 // up from row #998's 27 B — and leaves this constant exactly where row #998 set it, for a later
