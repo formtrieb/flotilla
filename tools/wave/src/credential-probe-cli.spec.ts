@@ -39,7 +39,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -85,8 +85,20 @@ function fakeSpawn(result: Partial<CredentialLookupResult> = {}): {
  * spelled inside the command would appear in the output legitimately and make
  * every containment assertion vacuous.
  */
+const tempDirs: string[] = [];
+
+/**
+ * Spec-owned temp dir, removed in the afterEach hook (so also when a test fails).
+ * The prefix deliberately does NOT start with the Reviewer's stamped-probe prefix.
+ */
+function makeTempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'flotilla-credprobe-spec-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
 function secretFileLookup(): string {
-  const file = join(mkdtempSync(join(tmpdir(), 'flotilla-probe-secret-')), 'secret');
+  const file = join(makeTempDir(), 'secret');
   writeFileSync(file, 'SENTINEL-RESOLVED-SECRET');
   return `cat '${file}'`;
 }
@@ -112,6 +124,7 @@ function capture(fn: () => number): { code: number; stdout: string; stderr: stri
 
 afterEach(() => {
   vi.restoreAllMocks();
+  for (const d of tempDirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
 // ─── 1. The answer ───────────────────────────────────────────────────────────
@@ -526,7 +539,7 @@ describe('runCredentialProbe — what it must never print', () => {
     // The sentinels live in FILES, not in the command string — otherwise the
     // command (which the report names, by design) would trivially contain them
     // and the assertion would prove nothing.
-    const dir = mkdtempSync(join(tmpdir(), 'flotilla-probe-'));
+    const dir = makeTempDir();
     const outFile = join(dir, 'out');
     const errFile = join(dir, 'err');
     writeFileSync(outFile, 'SENTINEL-ON-STDOUT');
