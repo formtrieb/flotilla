@@ -648,6 +648,18 @@ const MODULE_LOCAL_ALLOWLIST: Record<string, Record<string, string>> = {
   // exported derivations. Everything still listed below keeps its reading
   // unchanged: the verb is the consumer surface, and the JSON is what a caller
   // reads.
+  // ─── the shared --title-file reader (issue #1076) ────────────────────────
+  //
+  // `host-pr-cli.ts` and `route-tuple.ts` each carried a module-local twin of
+  // this reader, held together only by parallel spec cases. Collapsing them to
+  // one needs ONE export — consumed by those two CLI-edge modules and nothing
+  // else — so it is allowlisted on the same standard as the CLI-edge blocks
+  // around it: a consumer passes the FLAG to a verb, never imports the reader.
+  './title-file': {
+    readTitleFile:
+      "The one `--title-file <path>` reader both `host-pr create` and `route-tuple` call (one trailing newline trimmed; absent, unreadable or empty → a usage message each call site prints as before). Exported only so those two CLI-edge modules share it; a consumer meets it as the flag on either verb, never as an import.",
+    TitleFileRead: 'The result shape of readTitleFile directly above — module-local for the same reason.',
+  },
   './route-tuple': {
     runRouteTuple:
       "The `route-tuple` verb's runner. Its one call site is cli.ts's async interception, exactly as runComposeDriver/runHostPr are reached; a consumer drives it as a CLI subcommand and reads the one JSON result.",

@@ -1020,7 +1020,7 @@ Run the commands the VerifyGate selects for your changed files; report exact cou
    \`\`\`
    **RUN THAT \`--title\` LINE EXACTLY AS PRINTED, AND NEVER RE-QUOTE THE TITLE.** It is already rendered as a SINGLE-QUOTED shell word, with any single quote inside the title written as the \`'\\''\` idiom, so whatever the title contains — a backtick, a double quote, a \`$\` — reaches the host verbatim. Do not swap those single quotes for double quotes, do not add a second layer of quoting, and do not retype the title from the PR-body file: inside DOUBLE quotes the shell still expands backticks, \`\$(…)\` and \`\$NAME\`, and a title that legitimately opens with a backtick-quoted token ran command substitution on its way to the host, live. If the line looks odd to you, that is the escaping doing its job.
 
-   **IF THE TITLE OR THE BODY QUOTES A GIT COMMAND, PASS IT BY FILE.** The harness's worktree-isolation guard matches git-command text anywhere on the command line, a quoted argument value included: a Worker's \`host-pr create\` was refused because its \`--title\` contained \`git reset --hard\` ("…so what it runs cannot be shown not to be git"), and a command-substituted title (\`\$(cat <file>)\`) was refused in turn as a computed value (wave-shared Convention 13, Catalog entry 8). So when the title names a git command, write the title — the text between the single quotes on that \`--title\` line, each \`'\\''\` read back as one \`'\` — to \`.flotilla/tmp/pr-title-${issue.id}.txt\` with your file-writing tool, and pass \`--title-file .flotilla/tmp/pr-title-${issue.id}.txt\` IN PLACE OF the \`--title\` line (exactly one of the two, or the verb exits 2; one trailing newline is trimmed; an empty file exits 2). The body already travels by \`--body-file\`, so git text in it never reaches the command line. Delete the title file with the body file once step 4 has confirmed the PR.
+   **IF THE TITLE OR THE BODY QUOTES A GIT COMMAND, PASS IT BY FILE.** In the field, a Worker's \`host-pr create\` was refused by a worktree-isolation guard of the family you run under because its quoted \`--title\` contained \`git reset --hard\` ("…so what it runs cannot be shown not to be git"), and a command-substituted title (\`\$(cat <file>)\`) was refused in turn as a computed value. That refusal did NOT reproduce on demand: a probe from a worktree-isolated dispatch ran the same git-bearing \`--title\` shape clean, and only a heredoc whose text named git was refused (wave-shared Convention 13, Catalog entry 8). So this is not a claim that the guard matches git text in every argument value — it is the same argument the \`--body-file\` rule above makes: you cannot predict from where you stand whether your call will be refused, and a file keeps the value off the command line entirely, so the file form is the safe default. So when the title names a git command, write the title — the text between the single quotes on that \`--title\` line, each \`'\\''\` read back as one \`'\` — to \`.flotilla/tmp/pr-title-${issue.id}.txt\` with your file-writing tool, and pass \`--title-file .flotilla/tmp/pr-title-${issue.id}.txt\` IN PLACE OF the \`--title\` line (exactly one of the two, or the verb exits 2; one trailing newline is trimmed; an empty file exits 2). The body already travels by \`--body-file\`, so git text in it never reaches the command line. Delete the title file with the body file once step 4 has confirmed the PR.
 
    \`--body-file\` and \`--body\` are alternatives: exactly one of them, never both and never neither, or the verb exits 2 naming both flags. The verb reads GITHUB_TOKEN from your env and never prints it.
 
@@ -1364,9 +1364,11 @@ function scribeBrief(kind, issue, iter, payload) {
   // base64`; the digest is still taken over the JSON, which is what the verb
   // decodes the token to. No raw verdict JSON reaches the brief. The report
   // path is unchanged (it never failed this way): its payload is the JSON line
-  // itself, kept as a `${embedded}` source line of its own below, where
-  // skill-schema-drift.spec.ts reads it (a JSON serialisation has no leading or
-  // trailing whitespace, so the trim removes only the two template newlines).
+  // itself, kept as a `${embedded}` source line of its own below (a JSON
+  // serialisation has no leading or trailing whitespace, so the trim removes
+  // only the two template newlines). skill-schema-drift.spec.ts pins BOTH
+  // branches to `embedded`: the verdict branch by its `${base64Utf8(embedded)}`
+  // fence, the report branch by that standalone line.
   const embedded = JSON.stringify(payload)
   const digest = canonicalDigest(JSON.parse(embedded))
   const b64 = kind === 'verdict'
@@ -1527,7 +1529,7 @@ ${payloadBlock}
 3. As a SEPARATE Bash call — its text starting EXACTLY with the WAVE_CLI form,
    so it matches the allowlist prefix from token one — run:
    ${writeCall}
-   (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, a key the schema does not declare, a payload naming a DIFFERENT row than --id, or a digest mismatch; exit 2 → usage/unreadable, or a --id that is not a bare id)
+   (exit 0 → the absolute written path is printed on stdout; exit 1 → invalid payload, a key the schema does not declare, a payload naming a DIFFERENT row than --id, or a digest mismatch; exit 2 → usage/unreadable, or a --id that is not a bare id${b64 ? '; also exit 2 → the token does not decode: invalid base64 (a character outside the alphabet, a bad length or padding, an empty file), decoded bytes that are not UTF-8, or valid base64 that is not JSON after decoding' : ''})
    Every path in that command is absolute and shell-quoted; nothing in it depends on a
    previous call having moved you anywhere.
    **\`--expect-digest ${digest}\` is the digest of ${b64 ? 'the verdict JSON that token decodes to' : 'the payload line above'}, computed by the
@@ -1535,7 +1537,7 @@ ${payloadBlock}
    a mismatch, naming both digests: a mismatch means your file is NOT that line byte-for-byte —
    a reworded list element, a dropped or added field, a re-typed value. It is not yours to
    remove or change, exactly as \`--id\` is not.
-4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same sidecar directory, same --iter, same --expect-digest (on a digest mismatch, re-write the payload file from the line above first). If it fails again, report the failure; never vary an argument to buy a zero.
+4. If the exit code is non-zero, retry the SAME command ONCE, BYTE-IDENTICAL — same --id, same sidecar directory, same --iter, same --expect-digest (${b64 ? 'on a digest mismatch or a base64 decode refusal, re-write the .b64 payload file from the fenced token above first, byte-identical' : 'on a digest mismatch, re-write the payload file from the line above first'}). If it fails again, report the failure; never vary an argument to buy a zero.
 Return { ok: <true iff the verb exited 0>, path: <the absolute path it printed, or ''>, error: <stderr, only on failure — and the step-1 cwd mismatch too, if there was one>, notice: <on an EXIT-0 run only: any \`notice:\` or \`warning:\` line the verb printed, verbatim, plus a \`cwd-mismatch:\` line if step 1 found one — a normalized decoration, a misnamed leftover in the sidecar dir, or a write made from the wrong cwd is a finding the Coordinator's routing step must not lose, and an exit-0 run is exactly where it would otherwise be dropped> }.`
 }
 

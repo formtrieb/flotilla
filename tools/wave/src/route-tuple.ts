@@ -136,6 +136,7 @@ import { canonicalJson } from './canonical-json';
 import { flag, printJson } from './cli-utils';
 import { resolveStore } from './cli-store';
 import { closePhraseFor, slugFromSpinePath, stripBareIds } from './compose-driver';
+import { readTitleFile } from './title-file';
 import {
   createOrReusePr,
   detectHost,
@@ -565,33 +566,6 @@ export const ROUTE_TUPLE_CONTRACT: VerbContract = defineVerb({
 function usage(message: string): number {
   process.stderr.write([`error: ${message}`, ...ROUTE_TUPLE_CONTRACT.usage, ''].join('\n'));
   return 2;
-}
-
-/**
- * Read `--title-file <path>` (issue #1065): the content with ONE trailing
- * newline (`\n` or `\r\n`) trimmed; an absent path, an unreadable path or an
- * empty title is a usage message instead.
- *
- * The module-local twin of `host-pr-cli`'s own reader — same rule, same
- * messages. Sharing one would need a new engine export (a barrel/allowlist
- * decision outside the declaring row's Files globs), so both specs pin the same
- * cases instead and a drift between the copies fails one of them.
- */
-function readTitleFile(path: string | undefined): { ok: true; title: string } | { ok: false; message: string } {
-  if (path === undefined || path.length === 0) {
-    return { ok: false, message: '--title-file <path> needs a path (the file whose content becomes the PR title)' };
-  }
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch (err) {
-    return { ok: false, message: `could not read --title-file "${path}": ${(err as Error).message}` };
-  }
-  const title = raw.replace(/\r?\n$/, '');
-  if (title.length === 0) {
-    return { ok: false, message: `--title-file "${path}" is empty — a PR needs a title` };
-  }
-  return { ok: true, title };
 }
 
 function readJsonOrNull(path: string): unknown {
