@@ -665,9 +665,11 @@ describe('route-tuple', () => {
 
     // ── --title-file (issue #1065): the flag rung, read from a file ─────────
     //
-    // The same semantics `host-pr create --title-file` has — the two readers are
-    // module-local twins, so this block pins the same cases host-pr-cli.spec.ts
-    // pins, and a drift between the copies fails one side.
+    // The same semantics `host-pr create --title-file` has — both verbs call the
+    // one shared reader in `title-file.ts` (pinned on its own in
+    // title-file.spec.ts). This block still pins the cases through the VERB, as
+    // host-pr-cli.spec.ts does, so each call site's wiring and printed message
+    // stay covered.
 
     /** Run a REUSE with `extra` flags; return the exit code and the PATCHed title. */
     async function reuseWith(extra: string[]): Promise<{ code: number; patchedTitle?: string; methods: string[] }> {

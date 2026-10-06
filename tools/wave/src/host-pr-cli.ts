@@ -166,6 +166,7 @@ import {
   type Creds,
   type HttpProbe,
 } from './host-pr';
+import { readTitleFile } from './title-file';
 import { createGitHubApiFromEnv } from './adapters/github/github-api-factory';
 import {
   createBitbucketApiFromEnv,
@@ -696,53 +697,6 @@ function usage(message: string, verb?: Verb): number {
     [`error: ${message}`, ...(contract ?? fullUsageLines()), ''].join('\n'),
   );
   return 2;
-}
-
-/** {@link readTitleFile}'s answer: the title, or the usage message that refuses it. */
-type TitleFileRead = { ok: true; title: string } | { ok: false; message: string };
-
-/**
- * Read a PR title from `--title-file <path>` (issue #1065).
- *
- * **Module-local, with a twin in `route-tuple.ts`.** `route-tuple` takes the
- * same flag with the same semantics; exporting this one helper would need a
- * barrel/allowlist decision outside the declaring row's Files globs, so each
- * verb carries its own ten-line copy and BOTH specs pin the same four cases
- * (one `\n` trimmed, one `\r\n` trimmed, only one trimmed, empty refused) —
- * a drift between the copies fails one of them.
- *
- * **Why the file form exists.** An agent harness's worktree-isolation guard
- * refused a Worker's `host-pr create` because its quoted `--title` VALUE
- * contained git-command text (`git reset --hard`, the row's own subject) —
- * "so what it runs cannot be shown not to be git" — and `--title "$(cat f)"`
- * was refused in turn as a value computed at runtime. flotilla cannot change
- * the guard's matching; a file keeps the text off the command line entirely.
- *
- * **One trailing newline is trimmed, and only one** (`\n` or `\r\n`): a file
- * written by any editor ends in a newline that is not part of the title, while
- * anything beyond it is content the caller wrote and is left alone. Unlike
- * `--body-file`, which is verbatim because the close-phrase guard is
- * line-anchored, a title is one line and has no such guard to protect.
- *
- * An absent path, an unreadable path, and an empty title (after the trim) are
- * each refused with a message naming the flag and — where there is one — the
- * path, because the path is what the caller can fix. Pure apart from the read.
- */
-function readTitleFile(path: string | undefined): TitleFileRead {
-  if (path === undefined || path.length === 0) {
-    return { ok: false, message: '--title-file <path> needs a path (the file whose content becomes the PR title)' };
-  }
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf-8');
-  } catch (err) {
-    return { ok: false, message: `could not read --title-file "${path}": ${(err as Error).message}` };
-  }
-  const title = raw.replace(/\r?\n$/, '');
-  if (title.length === 0) {
-    return { ok: false, message: `--title-file "${path}" is empty — a PR needs a title` };
-  }
-  return { ok: true, title };
 }
 
 /**

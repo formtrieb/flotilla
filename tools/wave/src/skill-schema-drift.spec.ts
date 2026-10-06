@@ -1446,15 +1446,40 @@ describe('skill-schema-drift — the Scribe brief carries provenance + the filin
     expect(region).not.toMatch(/review is not the\s+Scribe's/);
   });
 
+  /**
+   * The serialisation pin, per Scribe branch. `embedded` is the ONE
+   * serialisation the brief is built from, and the digest is taken over it
+   * parsed back. The two branches then carry it differently:
+   *  - VERDICT: the fenced block is the base64 of exactly `embedded` —
+   *    `${base64Utf8(embedded)}` inside a ``` fence — and no raw JSON line.
+   *  - REPORT: the payload line IS `embedded`, as a standalone `${embedded}`
+   *    source line (trimmed of its two template newlines).
+   * Each branch is read out of its own arm of the `payloadBlock` ternary, so a
+   * branch that re-serialises (a second `JSON.stringify(payload)`), or encodes
+   * anything other than `embedded`, fails the arm it lives in.
+   */
+  function payloadBlockArms(region: string): { verdict: string; report: string } {
+    const m = /const payloadBlock = b64\n\s*\? ([\s\S]*?)\n\s*: ([\s\S]*?)\.trim\(\)\n/.exec(region);
+    if (!m) throw new Error('payloadBlock ternary not found in scribeBrief() body');
+    return { verdict: m[1], report: m[2] };
+  }
+
   it('embeds ONE serialisation and digests THAT one — the brief, the payload line and the flag cannot disagree', () => {
     const region = scribeBriefBody(driverJs);
-    // One serialisation, reused: the payload line is `${embedded}`, and the
-    // digest is taken over `embedded` parsed back — what a faithful Scribe's
-    // file parses to — never over a second `JSON.stringify(payload)`.
+    // One serialisation, reused, and the digest is taken over `embedded`
+    // parsed back — what a faithful Scribe's file parses (or decodes) to —
+    // never over a second `JSON.stringify(payload)`.
     expect(region).toContain('const embedded = JSON.stringify(payload)');
     expect(region).toContain('const digest = canonicalDigest(JSON.parse(embedded))');
-    expect(region).toMatch(/^\$\{embedded\}$/m);
+    expect(region.match(/JSON\.stringify\(/g)).toHaveLength(1);
     expect(region).not.toContain('${JSON.stringify(payload)}');
+    // The `b64` switch is the verdict kind, and the verdict write decodes base64.
+    expect(region).toContain("const b64 = kind === 'verdict'");
+    const arms = payloadBlockArms(region);
+    // VERDICT arm: a fence holding the base64 of `embedded`, and nothing else.
+    expect(arms.verdict).toBe('`\\`\\`\\`\\n${base64Utf8(embedded)}\\n\\`\\`\\``');
+    // REPORT arm: the standalone `${embedded}` line.
+    expect(arms.report).toMatch(/^`\n\$\{embedded\}\n`$/);
     // The flag rides both kinds' write commands and is named as not the Scribe's to vary.
     expect(region.match(/--iter \$\{iter\} --expect-digest \$\{digest\}`/g)).toHaveLength(2);
     expect(region).toMatch(/It is not yours to\s+remove or change/);

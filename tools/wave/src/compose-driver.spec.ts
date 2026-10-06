@@ -648,6 +648,23 @@ describe('compose-driver — a composed driver runs under the Workflow-tool cont
     expect(reportBrief).toContain('"outcome":"done"');
   });
 
+  it('the verdict Scribe brief names the base64 decode refusals under exit 2 and re-writes the .b64 file from the fenced token on retry; the report brief keeps its JSON-line wording', async () => {
+    const { calls } = await runComposedDriver(script);
+    const verdictBrief = calls.find((c) => c.opts.label === 'scribe-verdict:42')!.brief;
+    // Step 3's legend: the three decode refusals the verb exits 2 on.
+    expect(verdictBrief).toMatch(/also exit 2 → the token does not decode: invalid base64/);
+    expect(verdictBrief).toContain('decoded bytes that are not UTF-8');
+    expect(verdictBrief).toContain('valid base64 that is not JSON after decoding');
+    // Step 4's retry: the fenced token is the source, the .b64 file the target.
+    expect(verdictBrief).toContain(
+      'on a digest mismatch or a base64 decode refusal, re-write the .b64 payload file from the fenced token above first, byte-identical',
+    );
+    expect(verdictBrief).not.toContain('re-write the payload file from the line above');
+    const reportBrief = calls.find((c) => c.opts.label === 'scribe-report:42')!.brief;
+    expect(reportBrief).toContain('on a digest mismatch, re-write the payload file from the line above first');
+    expect(reportBrief).not.toMatch(/base64/);
+  });
+
   it('END TO END (verdict) — a hard verdict (quotes, arrows, &amp;, backslashes, multi-byte) round-trips: driver encode → write-verdict decode → digest match → sidecar equal to the payload', async () => {
     const hard = {
       verdict: 'approve',
@@ -4323,8 +4340,17 @@ describe('compose-driver — the PR-create title is rendered single-quoted, and 
     expect(brief).toContain('--title-file .flotilla/tmp/pr-title-42.txt');
     expect(brief).toContain('.flotilla/tmp/pr-title-42.txt` with your file-writing tool');
     // It names the refusal it routes around and the catalog entry that records it.
-    expect(brief).toMatch(/quoted argument value included/);
     expect(brief).toMatch(/Convention 13, Catalog entry 8/);
+    // It states the evidence honestly: one field refusal, NOT reproduced on
+    // demand from an isolated dispatch — never "the guard matches git text in
+    // any argument value" as fact. The file form stays the safe default for
+    // the same reason the --body-file rule gives.
+    expect(brief).toMatch(/In the field, a Worker's `host-pr create` was refused/);
+    expect(brief).toMatch(/That refusal did NOT reproduce on demand/);
+    expect(brief).toMatch(/not a claim that the guard matches git text in every argument value/);
+    expect(brief).toMatch(/the file form is the safe default/);
+    expect(brief).not.toMatch(/matches git-command text anywhere on the command line/);
+    expect(brief).not.toMatch(/quoted argument value included/);
     // The body half: already a file, said so.
     expect(brief).toMatch(/The body already travels by `--body-file`/);
     // The command-substitution workaround is named WITHOUT reintroducing a
